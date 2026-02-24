@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hpcsim"
+version = "0.2.0"
+description = "HPC GPU Cluster Simulator for ML/DL/LLM Workloads with Green-Aware RL Scheduling"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "scipy>=1.11",
+    "tabulate>=0.9",
+    "seaborn>=0.12",
+]
+
+[project.optional-dependencies]
+# Required for RL scheduler training and inference
+rl = [
+    "torch>=2.0",
+    "scipy>=1.11",
+]
+# Full install: classical + RL
+full = [
+    "torch>=2.0",
+    "scipy>=1.11",
+]
+
+[project.scripts]
+hpcsim = "hpcsim.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hpcsim"]
