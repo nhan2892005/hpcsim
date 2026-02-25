@@ -7,7 +7,21 @@ name = "hpcsim"
 version = "0.2.0"
 description = "HPC GPU Cluster Simulator for ML/DL/LLM Workloads with Green-Aware RL Scheduling"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
+authors = [
+    { name = "DOGES - Synergia Research Team - HPCC" },
+]
+keywords = ["hpc", "gpu", "scheduler", "simulation", "reinforcement-learning", "green-computing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy>=1.26",
     "pandas>=2.0",
@@ -18,19 +32,56 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Required for RL scheduler training and inference
+# RL scheduler training — requires PyTorch
 rl = [
     "torch>=2.0",
-    "scipy>=1.11",
 ]
-# Full install: classical + RL
+# Development extras
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
+# Full install: core + RL + dev
 full = [
     "torch>=2.0",
-    "scipy>=1.11",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
 ]
 
 [project.scripts]
 hpcsim = "hpcsim.cli:main"
 
+[project.urls]
+Repository  = "https://github.com/nhan2892005/hpcsim"
+"Bug Tracker" = "https://github.com/nhan2892005/hpcsim/issues"
+
+# ── uv configuration ──────────────────────────────────────────────────────────
+[tool.uv]
+# Default extras to install with `uv sync`
+# Override with: uv sync --extra rl
+dev-dependencies = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+]
+
+# ── Hatch build ───────────────────────────────────────────────────────────────
 [tool.hatch.build.targets.wheel]
 packages = ["src/hpcsim"]
+
+# ── Ruff linter ───────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I"]
+ignore = ["E501"]
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"

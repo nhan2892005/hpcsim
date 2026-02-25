@@ -27,6 +27,7 @@ from torch.distributions import Categorical
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 from .env import (
+    CLUSTER_WIN, TOTAL_ROWS,
     HPCGreenEnv, EnvConfig,
     MAX_QUEUE_SIZE, RUN_WIN, GREEN_WIN, JOB_FEATURES,
     ACTION2_NUM, DELAY_MAX_JOB_NUM, DELAY_TIMES,
@@ -131,7 +132,7 @@ class GASMARLAgent:
     # ── Inference ─────────────────────────────────────────────────────────────
 
     def _parse_obs(self, obs_flat: np.ndarray) -> torch.Tensor:
-        total_slots = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN
+        total_slots = TOTAL_ROWS
         return torch.FloatTensor(
             obs_flat.reshape(1, total_slots, JOB_FEATURES)
         ).to(self.device)

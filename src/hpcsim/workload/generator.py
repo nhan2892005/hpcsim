@@ -18,9 +18,11 @@ import math
 
 from .job import (
     TrainingJob, InferenceJob, LLMJob, HPOJob, AnyJob,
+    CPUJob, MIGJob, HybridJob, ResourceType,
     ModelArch, GPUType, JobType, SchedulingMode,
     MODEL_PROFILES,
 )
+from ..cluster.hardware import CPUType, MIGProfile
 
 
 class ArrivalProcess(str, Enum):
@@ -43,10 +45,13 @@ class WorkloadConfig:
     mean_arrival_interval: float = 30.0    # seconds
     num_users: int = 10
     # job type mix
-    training_fraction: float = 0.70
-    inference_fraction: float = 0.15
-    llm_fraction: float = 0.10
-    hpo_fraction: float = 0.05
+    training_fraction: float = 0.62
+    inference_fraction: float = 0.13
+    llm_fraction: float = 0.08
+    hpo_fraction: float = 0.04
+    cpu_fraction: float = 0.08       # CPU-only jobs (data prep, preprocessing)
+    mig_fraction: float = 0.03       # MIG slice jobs (light inference / fine-tune)
+    hybrid_fraction: float = 0.02    # CPU+GPU hybrid jobs
     # GPU request distribution (power-law)
     gpu_request_min: int = 1
     gpu_request_max: int = 16
@@ -188,10 +193,13 @@ class WorkloadGenerator:
             cumul = 0.0
             job_type = JobType.TRAINING
             for jtype, frac in [
-                (JobType.TRAINING,  cfg.training_fraction),
-                (JobType.INFERENCE, cfg.inference_fraction),
-                (JobType.LLM_TRAIN, cfg.llm_fraction),
-                (JobType.HPO,       cfg.hpo_fraction),
+                (JobType.TRAINING,   cfg.training_fraction),
+                (JobType.INFERENCE,  cfg.inference_fraction),
+                (JobType.LLM_TRAIN,  cfg.llm_fraction),
+                (JobType.HPO,        cfg.hpo_fraction),
+                ("cpu",              getattr(cfg, "cpu_fraction",    0.08)),
+                ("mig",              getattr(cfg, "mig_fraction",    0.03)),
+                ("hybrid",           getattr(cfg, "hybrid_fraction", 0.02)),
             ]:
                 cumul += frac
                 if r <= cumul:
@@ -294,7 +302,7 @@ class WorkloadGenerator:
             )
 
         # ── HPO ───────────────────────────────────────────────────────────
-        else:
+        elif job_type == JobType.HPO:
             trials = self.rng.choice([4, 8, 16])
             return HPOJob(
                 job_id=f"H{idx:05d}",
@@ -306,3 +314,57 @@ class WorkloadGenerator:
                 memory_per_gpu_gb=mem_gb,
                 user_id=user_id,
             )
+
+        # ── CPU-only job ──────────────────────────────────────────────────
+        elif job_type == "cpu":
+            ncpu = self.rng.choice([4, 8, 16, 32, 64])
+            dur  = self.rng.lognormvariate(math.log(600), 0.8)
+            return CPUJob(
+                job_id=f"C{idx:05d}",
+                submit_time=t,
+                user_id=user_id,
+                num_cpus_requested=ncpu,
+                min_cpus=max(1, ncpu // 4),
+                max_cpus=min(128, ncpu * 2),
+                base_duration_sec=max(30.0, dur),
+                memory_gb=ncpu * 2.0,
+                deadline=(t + dur * self.rng.uniform(2.0, 5.0)
+                          if self.rng.random() < cfg.deadline_fraction else None),
+            )
+
+        # ── MIG slice job ─────────────────────────────────────────────────
+        elif job_type == "mig":
+            profile = self.rng.choice([MIGProfile.G1_10GB, MIGProfile.G2_20GB, MIGProfile.G3_40GB])
+            dur     = self.rng.lognormvariate(math.log(180), 0.6)
+            return MIGJob(
+                job_id=f"M{idx:05d}",
+                submit_time=t,
+                user_id=user_id,
+                arch=arch,
+                num_mig_requested=self.rng.choice([1, 2]),
+                mig_profile=profile,
+                base_duration_sec=max(30.0, dur),
+                num_iterations=_sample_iterations(cfg.mean_iter * 0.2,
+                                                  cfg.std_iter * 0.2, self.rng),
+                deadline=(t + dur * self.rng.uniform(1.5, 4.0)
+                          if self.rng.random() < cfg.deadline_fraction else None),
+            )
+
+        # ── CPU+GPU Hybrid job ────────────────────────────────────────────
+        elif job_type == "hybrid":
+            ngpu = self.rng.choice([2, 4, 8])
+            iters = _sample_iterations(cfg.mean_iter, cfg.std_iter, self.rng)
+            return HybridJob(
+                job_id=f"Y{idx:05d}",
+                submit_time=t,
+                user_id=user_id,
+                arch=arch,
+                num_gpus_requested=ngpu,
+                num_cpus_requested=ngpu * self.rng.choice([2, 4, 8]),
+                num_iterations=iters,
+                memory_per_gpu_gb=MODEL_PROFILES[arch].memory_per_replica_gb,
+            )
+
+        # ── Fallback ──────────────────────────────────────────────────────
+        else:
+            return self._make_job(JobType.TRAINING, t, idx)

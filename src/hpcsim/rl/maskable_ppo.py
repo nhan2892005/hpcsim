@@ -26,7 +26,7 @@ from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 from .env import (
     HPCGreenEnv, EnvConfig,
-    MAX_QUEUE_SIZE, RUN_WIN, GREEN_WIN, JOB_FEATURES,
+    MAX_QUEUE_SIZE, RUN_WIN, GREEN_WIN, CLUSTER_WIN, JOB_FEATURES,
 )
 from .networks import MaskablePPOActor, MaskablePPOCritic, CategoricalMasked
 from ..cluster.cluster import Cluster
@@ -119,9 +119,8 @@ class MaskablePPOAgent:
     # ── Inference ─────────────────────────────────────────────────────────────
 
     def _parse_obs(self, obs_flat: np.ndarray) -> torch.Tensor:
-        """Convert flat obs to [1, total_slots, JOB_FEATURES] tensor."""
-        total_slots = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN
-        obs = obs_flat.reshape(1, total_slots, JOB_FEATURES)
+        """Convert flat obs to [1, total_rows, JOB_FEATURES] tensor."""
+        obs = obs_flat.reshape(1, TOTAL_ROWS, JOB_FEATURES)
         return torch.FloatTensor(obs).to(self.device)
 
     def act(

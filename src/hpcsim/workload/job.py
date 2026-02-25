@@ -462,3 +462,183 @@ class HPOJob(BaseJob):
 
 # Union type
 AnyJob = TrainingJob | InferenceJob | LLMJob | HPOJob
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: Resource type enum + CPU/MIG job classes
+# ─────────────────────────────────────────────────────────────────────────────
+
+from ..cluster.hardware import CPUType, MIGProfile   # noqa — appended to file
+
+
+class ResourceType(str, Enum):
+    """
+    Declares what primary resource a job requires.
+    Scheduler uses this to route jobs to the correct pool.
+    """
+    GPU      = "gpu"       # Full physical GPU(s)
+    MIG      = "mig"       # MIG slice(s) on A100/H100
+    CPU      = "cpu"       # CPU cores only  (no GPU)
+    CPU_GPU  = "cpu_gpu"   # Both CPU cores AND GPU(s) — e.g. data-parallel w/ local PS
+
+
+# ── CPU Job ───────────────────────────────────────────────────────────────────
+
+@dataclass
+class CPUJob(BaseJob):
+    """
+    CPU-only job: data preprocessing, feature extraction, post-processing,
+    parameter-server workloads, traditional HPC simulation (non-GPU).
+
+    Runtime model:
+        duration = base_duration / (cpu_perf_factor × num_cores / ref_cores)
+        where cpu_perf_factor comes from CPUSpec.mt_perf.
+    """
+    job_type:         JobType      = JobType.TRAINING    # repurposed for CPU jobs
+    resource_type:    ResourceType = ResourceType.CPU
+
+    # Resource request
+    num_cpus_requested: int        = 4     # total CPU cores needed
+    min_cpus:          int         = 1     # elastic minimum
+    max_cpus:          int         = 64    # elastic maximum
+    cpu_type_preference: Optional[CPUType] = None
+
+    # Duration model
+    base_duration_sec: float       = 600.0  # duration at ref_cores
+    ref_cores:         int         = 4      # reference parallelism
+    memory_gb:         float       = 8.0    # RAM required
+
+    # SLO
+    deadline:          Optional[float] = None
+
+    # Runtime state
+    allocated_cpus:    list        = field(default_factory=list)  # ["cpu_id:N", ...]
+    attained_service:  float       = 0.0   # CPU-core-seconds (for fairness)
+
+    @property
+    def num_gpus_requested(self) -> int:
+        """Compatibility with schedulers that check num_gpus_requested."""
+        return 0
+
+    @property
+    def memory_per_gpu_gb(self) -> float:
+        return 0.0
+
+    def effective_duration(self, actual_cores: int, cpu_perf: float = 1.0) -> float:
+        """
+        Estimated runtime given actual_cores and cpu_perf_factor.
+        Assumes perfect scaling up to num_cpus_requested, then Amdahl-bounded.
+        """
+        if actual_cores <= 0:
+            return float("inf")
+        # Simple model: linear speedup with 80% parallel fraction
+        parallel_frac = 0.80
+        speedup = 1.0 / ((1 - parallel_frac) + parallel_frac / actual_cores * self.ref_cores)
+        return self.base_duration_sec / (speedup * cpu_perf)
+
+    def progress(self) -> float:
+        if self.start_time is None or self.end_time is None:
+            return 0.0
+        return 1.0  # simplified: CPU jobs run to completion
+
+
+# ── MIG Job ───────────────────────────────────────────────────────────────────
+
+@dataclass
+class MIGJob(BaseJob):
+    """
+    Job that requests MIG slice(s) instead of full GPUs.
+    Useful for small inference tasks, light training, or multi-tenant scenarios.
+
+    MIG slices provide strong isolation: dedicated compute + memory partition.
+    Typical use cases:
+      - Small fine-tuning runs (1g.10gb = 1/7 of A100)
+      - Inference serving with isolation guarantees
+      - Multi-tenant research clusters
+    """
+    job_type:         JobType      = JobType.INFERENCE
+    resource_type:    ResourceType = ResourceType.MIG
+
+    # MIG resource request
+    num_mig_requested: int         = 1
+    mig_profile:      MIGProfile   = MIGProfile.G1_10GB
+    gpu_type_preference: Optional[GPUType] = None
+
+    # Model / task
+    arch:             ModelArch    = ModelArch.RESNET50
+    batch_size:       int          = 1
+    num_iterations:   int          = 1000
+    completed_iterations: int      = 0
+
+    # Duration
+    base_duration_sec: float       = 120.0
+    deadline:          Optional[float] = None
+
+    # Runtime
+    allocated_mig:    list         = field(default_factory=list)  # mig_ids
+    attained_service: float        = 0.0
+
+    @property
+    def num_gpus_requested(self) -> int:
+        """MIG jobs do not consume full GPUs."""
+        return 0
+
+    @property
+    def memory_per_gpu_gb(self) -> float:
+        from ..cluster.hardware import MIG_PROFILE_SPECS
+        return MIG_PROFILE_SPECS.get(self.mig_profile, {}).get("memory_gb", 10.0)
+
+    def progress(self) -> float:
+        return self.completed_iterations / max(1, self.num_iterations)
+
+
+# ── Mixed CPU+GPU Job ─────────────────────────────────────────────────────────
+
+@dataclass
+class HybridJob(BaseJob):
+    """
+    Job that requires both CPU cores AND GPUs simultaneously.
+
+    Real-world examples:
+      - Data-parallel training with on-node data loaders (CPU) + GPU compute
+      - Reinforcement learning: CPU environment + GPU policy network
+      - Simulation + ML: CPU physics + GPU neural network
+      - PyTorch DataLoader workers (CPU) alongside GPU training
+
+    The scheduler must allocate BOTH resources before the job can start.
+    """
+    job_type:          JobType      = JobType.TRAINING
+    resource_type:     ResourceType = ResourceType.CPU_GPU
+
+    # GPU request
+    num_gpus_requested: int         = 4
+    gpu_type_preference: Optional[GPUType] = None
+    memory_per_gpu_gb:  float       = 8.0
+    scheduling_mode:    SchedulingMode = SchedulingMode.GANG
+    min_gpus:           int         = 1
+    max_gpus:           int         = 8
+
+    # CPU request (e.g. DataLoader workers)
+    num_cpus_requested: int         = 8   # typically 2× num_gpus
+    cpu_type_preference: Optional[CPUType] = None
+
+    # Task
+    arch:              ModelArch    = ModelArch.RESNET50
+    num_iterations:    int          = 10_000
+    completed_iterations: int       = 0
+    attained_service:  float        = 0.0
+    accumulated_work:  float        = 0.0
+    deadline:          Optional[float] = None
+
+    # Runtime
+    allocated_cpus:    list         = field(default_factory=list)  # ["cpu_id:N"]
+
+    def remaining_iterations(self) -> int:
+        return max(0, self.num_iterations - self.completed_iterations)
+
+    def progress(self) -> float:
+        return self.completed_iterations / max(1, self.num_iterations)
+
+
+# Update AnyJob union
+AnyJob = TrainingJob | InferenceJob | LLMJob | HPOJob | CPUJob | MIGJob | HybridJob

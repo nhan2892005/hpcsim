@@ -121,6 +121,8 @@ class SimulationEngine:
         self._running:  dict[str, AnyJob] = {}
         self._completed: list[AnyJob] = []
         self._job_gpus:  dict[str, list[str]] = {}   # job_id → gpu_ids
+        self._job_migs:  dict[str, list[str]] = {}   # job_id → mig_ids
+        self._job_cpus:  dict[str, list[str]] = {}   # job_id → cpu_alloc
         self._current_time = 0.0
 
     def _push(self, t: float, etype: EventType, job_id=None, data=None):
@@ -196,20 +198,61 @@ class SimulationEngine:
             job = alloc.job
             if job.job_id not in self._pending:
                 continue
-            mem = getattr(job, "memory_per_gpu_gb", 4.0)
-            ok  = self.cluster.allocate(job.job_id, alloc.gpu_ids, mem)
-            if not ok:
-                continue
-            job.status      = JobStatus.RUNNING
-            job.start_time  = job.start_time or event.time
+
+            jid  = job.job_id
+            mem  = getattr(job, "memory_per_gpu_gb", 4.0)
+            ok   = True
+
+            # Allocate GPUs (physical)
+            if alloc.gpu_ids:
+                ok = self.cluster.allocate(jid, alloc.gpu_ids, mem)
+                if not ok:
+                    continue
+
+            # Allocate MIG slices
+            if alloc.mig_ids:
+                ok = self.cluster.allocate_mig(jid, alloc.mig_ids)
+                if not ok:
+                    if alloc.gpu_ids:
+                        self.cluster.deallocate(jid, alloc.gpu_ids, mem)
+                    continue
+
+            # Allocate CPU cores
+            if alloc.cpu_alloc:
+                ok = self.cluster.allocate_cpu(jid, alloc.cpu_alloc)
+                if not ok:
+                    if alloc.gpu_ids:
+                        self.cluster.deallocate(jid, alloc.gpu_ids, mem)
+                    if alloc.mig_ids:
+                        self.cluster.deallocate_mig(jid, alloc.mig_ids)
+                    continue
+
+            # Commit allocation state
+            job.status     = JobStatus.RUNNING
+            job.start_time = job.start_time or event.time
             job.allocated_gpus = alloc.gpu_ids
-            self._job_gpus[job.job_id] = alloc.gpu_ids
-            del self._pending[job.job_id]
-            self._running[job.job_id] = job
-            # Schedule first progress tick
-            self._push(event.time + self.TICK_INTERVAL, EventType.JOB_PROGRESS, job.job_id)
+
+            # Store all resource handles
+            if alloc.gpu_ids:
+                self._job_gpus[jid] = alloc.gpu_ids
+            if alloc.mig_ids:
+                self._job_migs[jid] = alloc.mig_ids
+                if hasattr(job, "allocated_mig"):
+                    job.allocated_mig = alloc.mig_ids
+            if alloc.cpu_alloc:
+                self._job_cpus[jid] = alloc.cpu_alloc
+                if hasattr(job, "allocated_cpus"):
+                    job.allocated_cpus = alloc.cpu_alloc
+
+            del self._pending[jid]
+            self._running[jid] = job
+            self._push(event.time + self.TICK_INTERVAL, EventType.JOB_PROGRESS, jid)
             if self.verbose:
-                print(f"  [{event.time:.0f}s] START {job.job_id} gpus={alloc.gpu_ids[:2]}...")
+                rtype = alloc.resource_type
+                detail = (f"gpus={alloc.gpu_ids[:2]}..." if alloc.gpu_ids
+                         else f"migs={alloc.mig_ids[:2]}..." if alloc.mig_ids
+                         else f"cpus={alloc.cpu_alloc[:2]}...")
+                print(f"  [{event.time:.0f}s] START {jid} [{rtype}] {detail}")
             self.metrics.record_job_start(job, event.time)
 
         # Schedule next invocation
@@ -278,6 +321,8 @@ class SimulationEngine:
         job.end_time = event.time
         mem = getattr(job, "memory_per_gpu_gb", 4.0)
         self.cluster.deallocate(job_id, self._job_gpus.pop(job_id, []), mem)
+        self.cluster.deallocate_mig(job_id, self._job_migs.pop(job_id, []))
+        self.cluster.deallocate_cpu(job_id, self._job_cpus.pop(job_id, []))
         self._completed.append(job)
         self.metrics.record_job_complete(job, event.time)
         if self.verbose:
@@ -293,6 +338,8 @@ class SimulationEngine:
         job.preempt_count += 1
         mem = getattr(job, "memory_per_gpu_gb", 4.0)
         self.cluster.deallocate(job_id, self._job_gpus.pop(job_id, []), mem)
+        self.cluster.deallocate_mig(job_id, self._job_migs.pop(job_id, []))
+        self.cluster.deallocate_cpu(job_id, self._job_cpus.pop(job_id, []))
         # Checkpoint overhead
         ckpt = getattr(job, "checkpoint_overhead_sec", 30.0)
         job.submit_time = current_time + ckpt   # re-enters queue after checkpoint

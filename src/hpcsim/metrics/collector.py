@@ -236,6 +236,38 @@ class MetricsCollector:
 
     # ── Summary dict ─────────────────────────────────────────────────────────
 
+
+    def avg_cpu_utilization(self) -> float:
+        """Average CPU core utilization across all snapshots."""
+        if not self._snapshots:
+            return 0.0
+        vals = [s.get("cpu_utilization", 0.0) for s in self._snapshots]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def cpu_jobs_completed(self) -> int:
+        """Number of completed CPU-only jobs."""
+        from ..workload.job import ResourceType
+        return sum(
+            1 for j in self._completed_jobs
+            if getattr(j, "resource_type", None) == ResourceType.CPU
+        )
+
+    def mig_jobs_completed(self) -> int:
+        """Number of completed MIG-slice jobs."""
+        from ..workload.job import ResourceType
+        return sum(
+            1 for j in self._completed_jobs
+            if getattr(j, "resource_type", None) == ResourceType.MIG
+        )
+
+    def hybrid_jobs_completed(self) -> int:
+        """Number of completed CPU+GPU hybrid jobs."""
+        from ..workload.job import ResourceType
+        return sum(
+            1 for j in self._completed_jobs
+            if getattr(j, "resource_type", None) == ResourceType.CPU_GPU
+        )
+
     def summary(self) -> dict:
         jct = self.jct_stats()
         return {
@@ -256,4 +288,9 @@ class MetricsCollector:
             "renewable_energy_wh":          self.renewable_energy_wh(),           # ← NEW
             "brown_energy_wh":              self.brown_energy_wh(),               # ← NEW
             "preemptions":                  self.preemption_count,
+            # CPU / MIG breakdown
+            "avg_cpu_util":                 self.avg_cpu_utilization(),
+            "cpu_jobs_completed":           self.cpu_jobs_completed(),
+            "mig_jobs_completed":           self.mig_jobs_completed(),
+            "hybrid_jobs_completed":        self.hybrid_jobs_completed(),
         }

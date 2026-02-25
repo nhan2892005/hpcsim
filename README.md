@@ -1,343 +1,463 @@
-# HPCSim — HPC GPU Cluster Scheduler Simulator
+# HPCSim — HPC GPU/CPU Cluster Scheduler Simulator
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![PyTorch Optional](https://img.shields.io/badge/PyTorch-optional-orange.svg)](https://pytorch.org)
+Simulator nghiên cứu các thuật toán lập lịch cho HPC heterogeneous cluster, tích hợp năng lượng tái tạo và các thuật toán RL Scheduling.
 
-**HPCSim** là bộ mô phỏng sự kiện rời rạc (discrete-event simulator) cho cụm HPC GPU không đồng nhất (heterogeneous GPU cluster), được xây dựng phục vụ nghiên cứu thuật toán lập lịch — bao gồm các bộ lập lịch học tăng cường (RL-based schedulers) tích hợp mô hình năng lượng tái tạo (solar + wind).
+## Tính năng nổi bật
 
----
-
-## Mục lục
-
-1. [Cơ sở lý thuyết](#1-cơ-sở-lý-thuyết)
-2. [Kiến trúc dự án](#2-kiến-trúc-dự-án)
-3. [Yêu cầu hệ thống](#3-yêu-cầu-hệ-thống)
-4. [Cài đặt](#4-cài-đặt)
-5. [Quick Start](#5-quick-start)
-6. [Các bước chạy cơ bản](#6-các-bước-chạy-cơ-bản)
-7. [Tài liệu chi tiết](#7-tài-liệu-chi-tiết)
+- **Heterogeneous Cluster thực tế**: GPU-only, CPU-only, Mixed CPU+GPU, MIG (A100/H100), MPS
+- **3 loại tài nguyên**: GPU vật lý, CPU cores, MIG slices — cấp phát độc lập
+- **5 loại job**: TrainingJob, InferenceJob, LLMJob, HPOJob, CPUJob, MIGJob, HybridJob
+- **14 scheduler**: FIFO, SJF, Tiresias, Gavel, Pollux, Themis, Chronus, ElasticFlow, MaxMin, Backfill + 2 RL (MaskablePPO, GAS-MARL)
+- **RL state space 121 × 12**: Queue + Running + Green forecast + Cluster state
+- **Năng lượng xanh**: Solar + Wind model, reward R = ReUtil − η × AvgBSLD
 
 ---
 
-## 1. Cơ sở lý thuyết
+## Cài đặt (uv)
 
-### 1.1 HPC GPU Cluster là gì?
+```bash
+# Cài uv nếu chưa có
+curl -LsSf https://astral.sh/uv/install.sh | sh          # macOS/Linux
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex" # Windows
 
-Một **cụm HPC GPU** bao gồm nhiều node máy tính kết nối qua mạng tốc độ cao (InfiniBand, NVLink). Mỗi node chứa một số GPU (có thể không đồng nhất về loại và hiệu năng) để thực thi các tác vụ tính toán song song cường độ cao như huấn luyện mô hình AI, mô phỏng vật lý, phân tích dữ liệu lớn.
+# Clone và cài
+git clone https://github.com/your-org/hpcsim.git
+cd hpcsim
 
+uv sync               # core (không có PyTorch)
+uv sync --extra rl    # với PyTorch (cần cho MaskablePPO, GAS-MARL)
+uv sync --all-extras  # full (bao gồm dev tools)
+
+# PyTorch CUDA version
+uv pip install torch --index-url https://download.pytorch.org/whl/cu121  # CUDA 12.1
+uv pip install torch --index-url https://download.pytorch.org/whl/cu118  # CUDA 11.8
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu    # CPU only
+
+# Kiểm tra cài đặt
+uv run hpcsim info
+uv run hpcsim test
 ```
-Cụm HPC điển hình
-══════════════════════════════════════════════════
-  Node 0 (high-end)  :  [V100 × 8]  128 GB RAM
-  Node 1 (high-end)  :  [V100 × 8]  128 GB RAM
-  Node 2 (mid-range) :  [T4   × 4]   64 GB RAM
-  Node 3 (mid-range) :  [T4   × 4]   64 GB RAM
-  Node 4 (economy)   :  [K80  × 2]   32 GB RAM
-══════════════════════════════════════════════════
-                ↑
-         Kết nối InfiniBand (100 Gb/s)
-```
-
-### 1.2 Vòng đời Job trong HPC
-
-```
-SUBMITTED → QUEUED → RUNNING → COMPLETED
-               ↑           ↑
-          (chờ GPU)   (đang dùng GPU)
-```
-
-| Trạng thái | Mô tả |
-|------------|-------|
-| SUBMITTED  | Job gửi lên hệ thống |
-| QUEUED     | Chờ trong hàng đợi; chưa đủ GPU khả dụng |
-| RUNNING    | GPU đã được cấp phát; job đang thực thi |
-| COMPLETED  | Job hoàn thành; GPU giải phóng |
-
-**Wait time** = thời điểm bắt đầu − thời điểm gửi lên.  
-**Slowdown (BSLD)** = `(wait + runtime) / max(τ, runtime)` với τ = 10s.
-
-### 1.3 Bài toán Lập lịch HPC
-
-Bộ lập lịch quyết định **job nào chạy trên GPU nào và khi nào**, với ràng buộc:
-- Một job cần đúng số lượng GPU yêu cầu
-- GPU đang bận không được chia sẻ
-- Một số job yêu cầu loại GPU cụ thể (V100 cho FP16, K80 cho inference nhẹ)
-
-Mục tiêu tối ưu điển hình:
-
-| Metric | Ý nghĩa |
-|--------|---------|
-| ↓ Avg JCT | Giảm thời gian hoàn thành trung bình |
-| ↓ AvgBSLD | Giảm độ trễ quy chuẩn |
-| ↑ GPU Util | Tăng tỉ lệ sử dụng GPU |
-| ↑ ReUtil | Tăng tỉ lệ dùng điện tái tạo |
-
-### 1.4 Các thuật toán Lập lịch Cổ điển
-
-| Thuật toán | Ý tưởng chính | Ưu điểm | Hạn chế |
-|------------|--------------|---------|---------|
-| **FIFO** | Thứ tự gửi lên | Đơn giản, công bằng | Kém hiệu quả khi job nhỏ sau job lớn |
-| **SJF** | Job ngắn trước | Giảm JCT trung bình | Có thể bỏ đói job dài |
-| **Backfilling** | Lấp khoảng trống GPU khi chờ job ưu tiên | Tăng utilization | Cần dự báo runtime |
-| **Tiresias** | Ưu tiên theo lịch sử GPU-time | Tốt cho DL workload | Cần dữ liệu lịch sử |
-| **Gavel** | Heterogeneity-aware | Tốt cho cụm không đồng nhất | Phức tạp |
-| **Pollux** | Adaptive resource allocation | Tự điều chỉnh batch size | Cần hook vào training loop |
-
-### 1.5 RL Scheduling và Năng lượng Tái tạo
-
-Dựa trên GAS-MARL (Chen et al., FGCS 2025), bộ lập lịch RL học cách cân bằng giữa hiệu suất và sử dụng điện tái tạo:
-
-```
-State  = [job queue features × 64] + [running jobs × 32] + [energy forecast × 24h]
-Action = (job_to_schedule, delay_type)
-Reward = ReUtil − η × AvgBSLD   (sparse, cuối episode)
-```
-
-**ReUtil** (Renewable Energy Utilization):
-
-```
-ReUtil = ∫ min(P_green(t), P_cluster(t)) dt  /  ∫ P_cluster(t) dt
-```
-
-### 1.6 Mô hình Năng lượng Tái tạo
-
-**Solar**: `P_solar(t) = 0.2 × 200m² × 1000 W/m² × sin(π(h−6)/14)` cho 6 ≤ h ≤ 20  
-**Wind**: turbine piecewise — cut-in 2.5 m/s, rated 15 m/s, cut-out 30 m/s, P_rated = 7.2 kW  
-**Wind speed**: Weibull(k=2) với AR(1) smoothing để tạo chuỗi thời gian thực tế
 
 ---
 
-## 2. Kiến trúc Dự án
+## Quick Start
+
+```bash
+# 1. Smoke test
+uv run hpcsim test
+
+# 2. Simulation đơn (cluster mặc định hpc_realistic — có GPU + CPU nodes)
+uv run hpcsim simulate --scheduler gavel --plot
+
+# 3. So sánh schedulers (bao gồm CPU jobs)
+uv run hpcsim benchmark --schedulers fifo,sjf,tiresias,gavel,pollux --plot
+
+# 4. Train RL (GPU + CPU + MIG jobs)
+uv run hpcsim train --algo all --epochs 300
+
+# 5. So sánh RL vs classical
+uv run hpcsim compare \
+    --classical fifo,tiresias,gavel,pollux \
+    --rl maskable_ppo,gas_marl \
+    --plot
+```
+
+---
+
+## Cơ sở lý thuyết
+
+### Cluster và tài nguyên
+
+HPCSim mô phỏng HPC heterogeneous cluster gồm ba loại node:
+
+**GPU-only node** — Node chuyên GPU, không schedule CPU:
+```
+NodeSpec(gpu_type=GPUType.V100, num_nodes=4, gpus_per_node=8)
+```
+
+**CPU-only node** — Login node, data preprocessing, parameter server:
+```
+NodeSpec(node_type=NodeType.CPU_ONLY, cpu_type=CPUType.EPYC_7003,
+         num_nodes=8, num_sockets=2, cores_per_socket=64)
+```
+
+**Mixed node** — Node thực tế: CPU cores + GPU accelerators:
+```
+NodeSpec(node_type=NodeType.MIXED,
+         gpu_type=GPUType.A100, gpus_per_node=8,
+         cpu_type=CPUType.EPYC_7002, num_sockets=2,
+         mig_profile=MIGProfile.G1_10GB)  # tùy chọn: bật MIG
+```
+
+### MIG (Multi-Instance GPU)
+
+A100 và H100 hỗ trợ phân vùng phần cứng cứng (MIG):
+
+| Profile | Compute | Memory | Slots/GPU | Use case |
+|---------|---------|--------|-----------|---------|
+| `1g.10gb` | 1/7 | 10 GB | 7 | Inference nhỏ, fine-tuning |
+| `2g.20gb` | 2/7 | 20 GB | 3 | Medium inference |
+| `3g.40gb` | 3/7 | 40 GB | 2 | Larger models |
+| `7g.80gb` | 7/7 | 80 GB | 1 | Full GPU (= không MIG) |
+
+Khác với MPS (time-sharing), MIG đảm bảo **cách ly hoàn toàn** — mỗi slice có compute engine, memory controller, và cache riêng.
+
+### Job Types
+
+| Loại | Class | Tài nguyên | Ví dụ |
+|------|-------|-----------|-------|
+| GPU training | `TrainingJob` | GPU(s) | ResNet, BERT fine-tuning |
+| LLM | `LLMJob` | nhiều GPU | GPT-2, LLaMA pre-training |
+| Inference | `InferenceJob` | GPU | Serving, batch scoring |
+| HPO | `HPOJob` | nhiều GPU | Hyperparameter search |
+| CPU-only | `CPUJob` | CPU cores | Data prep, feature eng. |
+| MIG | `MIGJob` | MIG slice | Light inference, sharing |
+| Hybrid | `HybridJob` | GPU + CPU | Training + DataLoader |
+
+### Scheduling Algorithms
+
+| # | Tên | Loại | Nguồn |
+|---|-----|------|-------|
+| 1 | FIFO | Classical | — |
+| 2 | SJF | Classical | — |
+| 3 | Tiresias (LAS) | Classical | Gu et al., NSDI'19 |
+| 4 | E-LAS | Classical | Sultana et al., ICPP'20 |
+| 5 | MLFQ | Classical | HPC standard |
+| 6 | Gavel | Classical | Narayanan et al., OSDI'20 |
+| 7 | Pollux | Classical | Qiao et al., OSDI'21 |
+| 8 | Themis | Classical | Mahajan et al., NSDI'20 |
+| 9 | Chronus | Classical | Gao et al., SoCC'21 |
+| 10 | ElasticFlow | Classical | Gu et al., ASPLOS'23 |
+| 11 | MaxMinFairness | Classical | Ghodsi et al., NSDI'11 |
+| 12 | Backfill | Classical | HPC standard (EASY) |
+| 13 | **MaskablePPO** | RL | PPO + action masking |
+| 14 | **GAS-MARL** | RL | Chen et al., FGCS'25 |
+
+### Reward Function (RL)
+
+```
+R = ReUtil − η × AvgBSLD
+
+ReUtil  = ∫ P_renewable(t) dt / ∫ P_total(t) dt
+AvgBSLD = mean[ (wait_time + exec_time) / max(τ, estimated_runtime) ]
+η       = 0.005  (điều chỉnh bằng --eta)
+```
+
+---
+
+## Cấu trúc dự án
 
 ```
 hpcsim/
 ├── src/hpcsim/
-│   ├── cluster/          # Mô hình phần cứng
-│   ├── workload/         # Sinh workload ngẫu nhiên
-│   ├── simulator/        # Lõi mô phỏng sự kiện rời rạc
-│   ├── scheduler/        # FIFO, SJF, Tiresias, Gavel, Pollux...
-│   ├── metrics/          # Thu thập và tổng hợp metrics
-│   ├── benchmark/        # So sánh nhiều scheduler
-│   ├── energy/           # Mô hình solar + wind
-│   └── rl/               # RL Schedulers (MaskablePPO, GAS-MARL)
-├── examples/
+│   ├── cluster/
+│   │   ├── hardware.py      # GPUSpec, CPUSpec, MIGProfile, ServerNode
+│   │   └── cluster.py       # NodeSpec, Cluster, CLUSTER_CONFIGS
+│   ├── workload/
+│   │   ├── job.py           # TrainingJob, CPUJob, MIGJob, HybridJob, ...
+│   │   └── generator.py     # WorkloadGenerator, WorkloadConfig
+│   ├── scheduler/
+│   │   └── schedulers.py    # 14 schedulers (BaseScheduler, ...)
+│   ├── simulator/
+│   │   └── engine.py        # Discrete-event simulation engine
+│   ├── metrics/
+│   │   └── collector.py     # MetricsCollector (GPU + CPU + energy)
+│   ├── energy/
+│   │   └── renewable.py     # Solar + Wind power model
+│   ├── rl/
+│   │   ├── env.py           # HPCGreenEnv (121×12 obs, CPU/MIG/Hybrid)
+│   │   ├── networks.py      # MaskablePPOActor/Critic, GASMARLActor/Critic
+│   │   ├── maskable_ppo.py  # MaskablePPOAgent + train loop
+│   │   ├── gas_marl.py      # GASMARLAgent + train loop
+│   │   └── train.py         # CLI train entry point
+│   ├── benchmark/
+│   │   └── runner.py        # BenchmarkRunner
+│   └── cli.py               # 11-command CLI
 ├── docs/
-└── pyproject.toml
-```
-
-**Luồng xử lý:**
-
-```
-WorkloadGenerator → SimulationEngine ←→ Scheduler
-                           ↓                ↑
-                    MetricsCollector   RenewableEnergyModule
-                           ↓
-                    BenchmarkRunner (bảng so sánh + plots)
+│   ├── simulation-guide.md  # Cluster, Job, Metrics API
+│   ├── rl-training.md       # RL state space, action, reward, training
+│   └── custom-scheduler.md  # Viết scheduler mới
+├── pyproject.toml
+└── README.md
 ```
 
 ---
 
-## 3. Yêu cầu Hệ thống
+## CLI — Tất cả lệnh
 
-| Chế độ | Python | RAM | GPU |
-|--------|--------|-----|-----|
-| Mô phỏng cổ điển | 3.10+ | 2 GB | Không cần |
-| RL Training (CPU) | 3.10+ | 8 GB | Không cần (chậm ~20×) |
-| RL Training (GPU) | 3.10+ | 8 GB | NVIDIA CUDA 11.8+ |
+```
+hpcsim info         Thông tin môi trường, packages, GPU
+hpcsim list         Liệt kê schedulers, clusters, traces
+hpcsim test         Smoke tests (30-60 giây)
 
----
+hpcsim simulate     Chạy một simulation
+hpcsim benchmark    So sánh nhiều schedulers
+hpcsim generate     Tạo workload trace
+hpcsim replay       Chạy lại workload đã lưu
 
-## 4. Cài đặt
+hpcsim train        Train RL (maskable_ppo / gas_marl / all)
+hpcsim eval         Đánh giá model đã train
+hpcsim compare      So sánh RL vs classical
+hpcsim plot         Vẽ biểu đồ từ CSV
+```
+
+### Ví dụ chi tiết
 
 ```bash
-# Cài đặt cơ bản (không RL)
-pip install -e .
+# --- Simulation ---
 
-# Với RL training (cần PyTorch)
-pip install torch --index-url https://download.pytorch.org/whl/cu118
-pip install -e .[rl]
+# Cluster hpc_realistic: có GPU + CPU nodes, workload hỗn hợp
+uv run hpcsim simulate \
+    --scheduler gavel \
+    --cluster hpc_realistic \
+    --duration 86400 \
+    --arrival-rate 30 \
+    --seed 42 \
+    --plot \
+    --output-json results_gavel.json
 
-# Tất cả
-pip install -e .[full]
+# Cluster A100 với MIG
+uv run hpcsim simulate \
+    --scheduler fifo \
+    --cluster a100_mig_cluster \
+    --plot
 
-# Kiểm tra
-python -c "from hpcsim import Cluster, CLUSTER_CONFIGS; print('Core OK')"
-python -c "from hpcsim.rl.env import HPCGreenEnv; print('RL OK')"
+# --- Benchmark ---
+
+# So sánh 5 runs, lưu CSV
+uv run hpcsim benchmark \
+    --schedulers fifo,sjf,tiresias,gavel,pollux \
+    --cluster hpc_realistic \
+    --runs 5 \
+    --duration 86400 \
+    --output-csv bench.csv \
+    --plot
+
+# --- Workload ---
+
+# Tạo workload có CPU jobs (mặc định từ v0.3)
+uv run hpcsim generate \
+    --duration 86400 \
+    --arrival-rate 25 \
+    --seed 42 \
+    --output workload.json
+
+# Replay workload đã lưu với các schedulers khác nhau
+uv run hpcsim replay --workload workload.json --scheduler fifo  --output-json r_fifo.json
+uv run hpcsim replay --workload workload.json --scheduler gavel --output-json r_gavel.json
+
+# --- RL Training ---
+
+# Train với cluster có CPU nodes (mặc định từ v0.3)
+uv run hpcsim train --algo all --epochs 300 --traj 200 --cluster hpc_realistic
+
+# Train với A100 MIG cluster
+uv run hpcsim train --algo all --epochs 300 --cluster a100_mig_cluster
+
+# Resume từ checkpoint
+uv run hpcsim train --algo maskable_ppo --resume auto --epochs 200
+
+# Điều chỉnh trade-off xanh vs latency
+uv run hpcsim train --algo all --eta 0.001   # ưu tiên renewable energy
+uv run hpcsim train --algo all --eta 0.02    # ưu tiên latency
+
+# Đánh giá
+uv run hpcsim eval \
+    --model-dir models/ \
+    --algo all \
+    --episodes 20 \
+    --output-csv eval.csv
+
+# So sánh RL vs classical (5 runs mỗi scheduler)
+uv run hpcsim compare \
+    --classical fifo,sjf,tiresias,gavel,pollux \
+    --rl maskable_ppo,gas_marl \
+    --cluster hpc_realistic \
+    --runs 5 \
+    --output-csv compare.csv \
+    --plot
+
+# --- Plots ---
+uv run hpcsim plot --type learning-curve --input models/maskable_ppo/train_log.csv
+uv run hpcsim plot --type benchmark      --input bench.csv --output bench_plot.png
 ```
 
 ---
 
-## 5. Quick Start
-
-### 5.1 Mô phỏng đơn giản
+## API nhanh
 
 ```python
-from hpcsim import (Cluster, CLUSTER_CONFIGS, create_scheduler,
-                    SimulationEngine, MetricsCollector)
+import sys; sys.path.insert(0, "src")
+
+# ── Cluster ──────────────────────────────────────────────────────────────────
+from hpcsim.cluster.cluster import Cluster, CLUSTER_CONFIGS
+cluster = Cluster(CLUSTER_CONFIGS["hpc_realistic"])
+print(cluster.describe())
+# → GPUs=128, CPU cores=1984, 28 nodes
+
+# ── Workload ─────────────────────────────────────────────────────────────────
 from hpcsim.workload.generator import WorkloadGenerator, WorkloadConfig
+from hpcsim.workload.job import CPUJob, MIGJob, HybridJob, ResourceType
 
-cluster   = Cluster(CLUSTER_CONFIGS["tiny_test"])
-jobs      = WorkloadGenerator(WorkloadConfig(duration=3600)).generate()
-scheduler = create_scheduler("fifo", cluster)
-metrics   = MetricsCollector()
+jobs = WorkloadGenerator(WorkloadConfig(duration=3600, rng_seed=42)).generate()
+print(f"Generated {len(jobs)} jobs")
+# Mix mặc định: ~62% GPU, 8% CPU, 3% MIG, 2% Hybrid, ...
 
-engine = SimulationEngine(cluster, scheduler, jobs, metrics, max_sim_time=3600)
-engine.run()
+# ── Simulation ───────────────────────────────────────────────────────────────
+from hpcsim.simulator.engine import SimulationEngine
+from hpcsim.scheduler.schedulers import SCHEDULER_REGISTRY
+from hpcsim.energy.renewable import RenewableEnergyModule
 
-s = metrics.summary()
-print(f"Jobs done  : {s['jobs_completed']}")
-print(f"Avg JCT    : {s['avg_jct']:.1f}s")
-print(f"GPU Util   : {s['gpu_utilization']:.1%}")
-print(f"ReUtil     : {s['renewable_energy_utilization']:.1%}")
-```
+scheduler = SCHEDULER_REGISTRY["gavel"](cluster)
+engine = SimulationEngine(cluster, scheduler, jobs,
+                          energy_module=RenewableEnergyModule())
+summary = engine.run()
+print(summary)
+# avg_jct_s, avg_bsld, avg_gpu_util, avg_cpu_util,
+# renewable_energy_utilization, total_energy_kwh, ...
 
-### 5.2 Benchmark nhiều scheduler
+# ── RL Environment ───────────────────────────────────────────────────────────
+from hpcsim.rl.env import HPCGreenEnv, EnvConfig
+import numpy as np
 
-```python
-from hpcsim.benchmark.runner import BenchmarkRunner, BenchmarkConfig
-
-cfg = BenchmarkConfig(
-    schedulers=["fifo", "sjf", "tiresias", "gavel", "pollux"],
-    cluster_config="medium_heterogeneous_gavel",
-    num_runs=3,
-    sim_duration=3600,
-)
-runner = BenchmarkRunner(cfg)
-runner.print_table(runner.run())
-```
-
-```
-Scheduler  | Jobs | AvgJCT  | GPUUtil% | ReUtil%
------------+------+---------+----------+---------
-fifo       |   87 |  420.2s |    48.3% |   78.1%
-sjf        |  112 |  223.1s |    62.7% |   85.1%
-tiresias   |  118 |  198.4s |    65.1% |   87.6%
-gavel      |  134 |  259.3s |    68.9% |   94.6%
-pollux     |  141 |  201.7s |    71.2% |   95.7%
-```
-
-### 5.3 Train RL Scheduler
-
-```bash
-# Train nhanh để test
-python -m hpcsim.rl.train train \
-    --algo maskable_ppo \
-    --epochs 50 --traj 50 \
-    --ckpt-interval 10 --log-interval 5
-
-# Train đầy đủ
-python -m hpcsim.rl.train train \
-    --algo all --epochs 300 \
-    --ckpt-interval 50 --save-dir models/
-```
-
-**Output mẫu:**
-
-```
-  ========================================================
-  [MaskablePPO] Device=CUDA  epochs=300  traj/epoch=100
-  checkpoint_interval=50  save_best=True  log_interval=10
-  ========================================================
-  Epoch    Reward     ReUtil   AvgBSLD       ETA
-  ──────────────────────────────────────────────────────
-  [░░░░░░░░░░░░░░░░] ep=   1  reward=-0.0023  green=0.7812  bsld=0.1643  ETA=45.2m
-  [██░░░░░░░░░░░░░░] ep=  20  reward=+0.0841  green=0.8234  bsld=0.1201  ETA=38.1m
-  [████░░░░░░░░░░░░] ep=  50  reward=+0.1423  green=0.8901  bsld=0.0982  ETA=28.3m
-  ✓ Checkpoint → models/maskable_ppo/checkpoints/epoch_0050
-  ...
-  [MaskablePPO] Done  (42.3 min)
-  Final model  → models/maskable_ppo
-  Training log → models/maskable_ppo/train_log.csv
-  Best model   → models/maskable_ppo/checkpoints/best  (reward=0.1687)
-  Checkpoints  → models/maskable_ppo/checkpoints  (6 periodic + 1 best)
+env = HPCGreenEnv(EnvConfig(cluster_config="hpc_realistic"))
+obs = env.reset()              # (1452,) = 121 × 12
+mask = env.action_mask1()      # (64,) — 1 = schedulable
+action = int(np.argmax(mask))
+obs, reward, done, *_ = env.step(action)
 ```
 
 ---
 
-## 6. Các bước chạy cơ bản
+## Workflow nghiên cứu điển hình
 
-### Bước 1 — Chọn cluster
-
-```python
-from hpcsim import CLUSTER_CONFIGS
-# Các lựa chọn có sẵn:
-# tiny_test | small_v100 | medium_heterogeneous_gavel | large_mixed | gogh_hetero
-```
-
-### Bước 2 — Sinh workload
-
-```python
-from hpcsim.workload.generator import WorkloadGenerator, WorkloadConfig
-
-jobs = WorkloadGenerator(WorkloadConfig(
-    duration=7200,           # 2 giờ mô phỏng
-    arrival_rate=0.02,       # ~1 job mỗi 50 giây
-    gpu_dist={1:0.3, 2:0.3, 4:0.3, 8:0.1},
-    rng_seed=42,
-)).generate()
-```
-
-### Bước 3 — Chạy mô phỏng & lấy metrics
-
-```python
-from hpcsim import Cluster, CLUSTER_CONFIGS, create_scheduler, SimulationEngine, MetricsCollector
-
-cluster   = Cluster(CLUSTER_CONFIGS["medium_heterogeneous_gavel"])
-scheduler = create_scheduler("gavel", cluster)
-metrics   = MetricsCollector()
-engine    = SimulationEngine(cluster, scheduler, jobs, metrics, max_sim_time=7200)
-engine.run()
-print(metrics.summary())
-```
-
-### Bước 4 — So sánh schedulers
+### 1. Benchmark schedulers
 
 ```bash
-python -m hpcsim benchmark \
-    --schedulers fifo,tiresias,gavel,pollux \
-    --cluster medium_heterogeneous_gavel \
-    --runs 5 --duration 3600 \
-    --output results.csv --plot benchmark.png
+uv run hpcsim generate --duration 86400 --seed 42 --output wl.json
+for sched in fifo sjf tiresias gavel pollux; do
+    uv run hpcsim replay --workload wl.json --scheduler $sched \
+        --output-json results_$sched.json
+done
+uv run hpcsim plot --type benchmark --input bench.csv
 ```
 
-### Bước 5 — Train, eval, compare RL
+### 2. Nghiên cứu ảnh hưởng CPU fraction
+
+```python
+# Thay đổi tỉ lệ CPU jobs và so sánh kết quả
+for cpu_frac in [0.0, 0.05, 0.10, 0.20]:
+    cfg = WorkloadConfig(cpu_fraction=cpu_frac, rng_seed=42)
+    jobs = WorkloadGenerator(cfg).generate()
+    # ... chạy simulation với từng scheduler
+```
+
+### 3. Pipeline RL đầy đủ
 
 ```bash
 # Train
-python -m hpcsim.rl.train train --algo all --epochs 300 --ckpt-interval 50
+uv run hpcsim train --algo all --epochs 500 --cluster hpc_realistic
 
-# Resume từ checkpoint nếu bị gián đoạn
-python -m hpcsim.rl.train train --algo maskable_ppo --epochs 300 \
-    --resume models/maskable_ppo/checkpoints/epoch_0150
+# Evaluate
+uv run hpcsim eval --model-dir models/ --episodes 30 --output-csv eval.csv
 
-# Đánh giá
-python -m hpcsim.rl.train eval --model-dir models/ --episodes 10
-
-# So sánh tổng thể
-python -m hpcsim.rl.train compare \
+# Compare
+uv run hpcsim compare \
     --classical fifo,tiresias,gavel,pollux \
     --rl maskable_ppo,gas_marl \
-    --model-dir models/ --num-runs 3
+    --runs 5 --plot --output-csv compare.csv
+
+# Plot learning curves
+uv run hpcsim plot --type learning-curve \
+    --input models/maskable_ppo/train_log.csv
+uv run hpcsim plot --type learning-curve \
+    --input models/gas_marl/train_log.csv
 ```
 
 ---
 
-## 7. Tài liệu chi tiết
+## Tài liệu chi tiết
 
 | Tài liệu | Nội dung |
 |----------|---------|
-| [docs/simulation-guide.md](docs/simulation-guide.md) | Cluster config, job model, workload generation, metrics, benchmark |
-| [docs/custom-scheduler.md](docs/custom-scheduler.md) | Viết custom scheduler, Backfilling, Green Backfilling, so sánh |
-| [docs/rl-training.md](docs/rl-training.md) | Kiến trúc RL, quy trình train, checkpoint, CLI đầy đủ |
-| [examples/green_rl_example.py](examples/green_rl_example.py) | Demo tích hợp đầy đủ |
+| [docs/simulation-guide.md](docs/simulation-guide.md) | Cluster, NodeSpec, Job API, Metrics |
+| [docs/rl-training.md](docs/rl-training.md) | State space, Action masking CPU/MIG, Training, Eval |
+| [docs/custom-scheduler.md](docs/custom-scheduler.md) | Viết scheduler mới kế thừa BaseScheduler |
 
 ---
 
-## Tài liệu tham khảo
+## Tham khảo
 
-- Chen et al. (2025). *GAS-MARL: A Novel Bi-Objective Optimization Framework for Renewable Energy and Average Bounded Slowdown in HPC Job Scheduling*. FGCS.
-- Gu et al. (2019). *Tiresias: A GPU Cluster Manager for Distributed Deep Learning*. NSDI.
-- Narayanan et al. (2020). *Gavel: Heterogeneity-Aware Cluster Scheduling Policies for Deep Learning Workloads*. OSDI.
-- Qiao et al. (2021). *Pollux: Co-adaptive Cluster Scheduling for Goodput-Optimized Deep Learning*. OSDI.
+```
+@article{10.1145/3638757,
+author = {Ye, Zhisheng and Gao, Wei and Hu, Qinghao and Sun, Peng and Wang, Xiaolin and Luo, Yingwei and Zhang, Tianwei and Wen, Yonggang},
+title = {Deep Learning Workload Scheduling in GPU Datacenters: A Survey},
+year = {2024},
+issue_date = {June 2024},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+volume = {56},
+number = {6},
+issn = {0360-0300},
+url = {https://doi.org/10.1145/3638757},
+doi = {10.1145/3638757},
+journal = {ACM Comput. Surv.},
+month = jan,
+articleno = {146},
+numpages = {38},
+keywords = {Deep learning systems, datacenter scheduling}
+}
 
+@manual{nvidia_mig_guide,
+  title        = {Multi-Instance GPU (MIG)},
+  author       = {{NVIDIA Corporation}},
+  year         = {2023},
+  url          = {https://docs.nvidia.com/dgx/dgxa100-user-guide/using-mig.html},
+  note         = {Accessed: February 25, 2026},
+  organization = {NVIDIA Corporation},
+  howpublished = {\url{https://docs.nvidia.com/dgx/dgxa100-user-guide/using-mig.html}}
+}
+
+@article{CHEN2025107760,
+title = {GAS-MARL: Green-Aware job Scheduling algorithm for HPC clusters based on Multi-Action Deep Reinforcement Learning},
+journal = {Future Generation Computer Systems},
+volume = {167},
+pages = {107760},
+year = {2025},
+issn = {0167-739X},
+doi = {https://doi.org/10.1016/j.future.2025.107760},
+url = {https://www.sciencedirect.com/science/article/pii/S0167739X2500055X},
+author = {Rui Chen and Weiwei Lin and Huikang Huang and Xiaoying Ye and Zhiping Peng},
+keywords = {Job scheduling, High-performance computing, Deep Reinforcement Learning, Renewable energy, Green computing},
+}
+
+@Article{a18070385,
+AUTHOR = {Chab, Robert and Li, Fei and Setia, Sanjeev},
+TITLE = {Algorithmic Techniques for GPU Scheduling: A Comprehensive Survey},
+JOURNAL = {Algorithms},
+VOLUME = {18},
+YEAR = {2025},
+NUMBER = {7},
+ARTICLE-NUMBER = {385},
+URL = {https://www.mdpi.com/1999-4893/18/7/385},
+ISSN = {1999-4893},
+}
+
+@inproceedings{10.1145/3748273.3749212,
+author = {Kumar, Sumit and Temura, Arjun and Sharma, Naman and Singh, Ramanjeet and Dadhania, Meet and Tammana, Praveen and Burla, Satananda and Kamaluddin, Abed Mohammad and Shah, Rinku},
+title = {Simulating LLM training workloads for heterogeneous compute and network infrastructure},
+year = {2025},
+isbn = {9798400720826},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3748273.3749212},
+doi = {10.1145/3748273.3749212},
+booktitle = {Proceedings of the 2nd Workshop on Networks for AI Computing},
+pages = {105–107},
+numpages = {3},
+keywords = {Distributed Training, Heterogeneous GPU Cluster, LLM Simulator},
+location = {Coimbra, Portugal},
+series = {NAIC '25}
+}
+
+```

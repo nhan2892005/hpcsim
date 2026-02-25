@@ -27,27 +27,58 @@ if TYPE_CHECKING:
 
 from ..workload.job import (
     AnyJob, TrainingJob, InferenceJob, LLMJob, HPOJob,
+    CPUJob, MIGJob, HybridJob, ResourceType,
     ModelArch, GPUType, JobType, SchedulingMode,
     goodput, solo_throughput, MODEL_PROFILES,
 )
+from ..cluster.hardware import CPUType, MIGProfile
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scheduling Decision
+# Scheduling Decision — supports GPU, MIG, CPU, and Hybrid allocations
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Allocation:
-    job: AnyJob
-    gpu_ids: list[str]
+    job:         AnyJob
+    gpu_ids:     list[str]              = field(default_factory=list)
+    mig_ids:     list[str]              = field(default_factory=list)
+    cpu_alloc:   list[str]              = field(default_factory=list)  # ["cpu_id:N"]
+
+    @property
+    def resource_type(self) -> str:
+        if self.mig_ids:
+            return "mig"
+        if self.cpu_alloc and not self.gpu_ids:
+            return "cpu"
+        if self.cpu_alloc and self.gpu_ids:
+            return "hybrid"
+        return "gpu"
+
 
 @dataclass
 class SchedulingDecision:
     allocations: list[Allocation] = field(default_factory=list)
-    preemptions: list[str] = field(default_factory=list)  # job_ids to preempt
+    preemptions: list[str]        = field(default_factory=list)  # job_ids
 
-    def add(self, job: AnyJob, gpu_ids: list[str]):
-        self.allocations.append(Allocation(job=job, gpu_ids=gpu_ids))
+    def add(self, job: AnyJob, gpu_ids: list[str],
+            mig_ids: list[str] | None = None,
+            cpu_alloc: list[str] | None = None):
+        self.allocations.append(Allocation(
+            job=job,
+            gpu_ids=gpu_ids,
+            mig_ids=mig_ids or [],
+            cpu_alloc=cpu_alloc or [],
+        ))
+
+    def add_cpu(self, job: AnyJob, cpu_alloc: list[str]):
+        self.allocations.append(Allocation(job=job, cpu_alloc=cpu_alloc))
+
+    def add_mig(self, job: AnyJob, mig_ids: list[str]):
+        self.allocations.append(Allocation(job=job, mig_ids=mig_ids))
+
+    def add_hybrid(self, job: AnyJob, gpu_ids: list[str], cpu_alloc: list[str]):
+        self.allocations.append(Allocation(job=job, gpu_ids=gpu_ids, cpu_alloc=cpu_alloc))
 
     def preempt(self, job_id: str):
         self.preemptions.append(job_id)
@@ -58,12 +89,19 @@ class SchedulingDecision:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BaseScheduler(ABC):
-    """Abstract base; all schedulers implement schedule()."""
+    """
+    Abstract base class for all schedulers.
+
+    Subclasses implement schedule() which returns a SchedulingDecision.
+    Helper methods handle GPU, MIG, and CPU resource discovery.
+    """
 
     name: str = "base"
 
     def __init__(self, cluster: "Cluster"):
         self.cluster = cluster
+
+    # ── GPU helpers ───────────────────────────────────────────────────────────
 
     def _find_gpus(
         self,
@@ -71,11 +109,75 @@ class BaseScheduler(ABC):
         prefer_consolidated: bool = True,
         gpu_type: Optional[GPUType] = None,
     ) -> Optional[list[str]]:
-        n = getattr(job, "num_gpus_requested", 1)
+        """Find physical GPUs for a GPU or Hybrid job."""
+        n = getattr(job, "num_gpus_requested", 0)
         if n <= 0:
             return None
         gt = gpu_type or getattr(job, "gpu_type_preference", None)
         return self.cluster.find_best_placement(n, gt, prefer_consolidated)
+
+    # ── MIG helpers ───────────────────────────────────────────────────────────
+
+    def _find_mig(
+        self,
+        job: AnyJob,
+        profile: Optional[MIGProfile] = None,
+        gpu_type: Optional[GPUType] = None,
+    ) -> Optional[list[str]]:
+        """Find MIG slices for a MIGJob."""
+        if not self.cluster.has_mig():
+            return None
+        n       = getattr(job, "num_mig_requested", 1)
+        prof    = profile or getattr(job, "mig_profile", None)
+        gt      = gpu_type or getattr(job, "gpu_type_preference", None)
+        return self.cluster.find_mig_slices(n, prof, gt)
+
+    # ── CPU helpers ───────────────────────────────────────────────────────────
+
+    def _find_cpus(
+        self,
+        job: AnyJob,
+        cpu_type: Optional[CPUType] = None,
+        prefer_consolidated: bool = True,
+    ) -> Optional[list[str]]:
+        """Find CPU cores for a CPUJob or HybridJob."""
+        if not self.cluster.has_cpu_nodes():
+            return None
+        n  = getattr(job, "num_cpus_requested", 0)
+        if n <= 0:
+            return None
+        ct = cpu_type or getattr(job, "cpu_type_preference", None)
+        return self.cluster.find_cpu_cores(n, ct, prefer_consolidated)
+
+    # ── Unified resource finder ───────────────────────────────────────────────
+
+    def _find_resources(
+        self, job: AnyJob
+    ) -> Optional[tuple[list[str], list[str], list[str]]]:
+        """
+        Find resources for any job type.
+        Returns (gpu_ids, mig_ids, cpu_alloc) or None if unavailable.
+        """
+        rt = getattr(job, "resource_type", ResourceType.GPU)
+
+        if rt == ResourceType.CPU:
+            cpu = self._find_cpus(job)
+            return ([], [], cpu) if cpu else None
+
+        if rt == ResourceType.MIG:
+            mig = self._find_mig(job)
+            return ([], mig, []) if mig else None
+
+        if rt == ResourceType.CPU_GPU:
+            gpus = self._find_gpus(job)
+            cpus = self._find_cpus(job)
+            if gpus and cpus:
+                return (gpus, [], cpus)
+            return None
+
+        # Default: GPU
+        gpus = self._find_gpus(job)
+        return (gpus, [], []) if gpus else None
 
     @abstractmethod
     def schedule(
@@ -107,9 +209,10 @@ class FIFOScheduler(BaseScheduler):
         decision = SchedulingDecision()
         ordered = sorted(pending, key=lambda j: j.submit_time)
         for job in ordered:
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -139,9 +242,10 @@ class SJFScheduler(BaseScheduler):
         decision = SchedulingDecision()
         ordered = sorted(pending, key=self._est_duration)
         for job in ordered:
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -177,9 +281,10 @@ class TiresiasLASScheduler(BaseScheduler):
             j.submit_time,
         ))
         for job in ordered:
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -206,9 +311,10 @@ class ELASScheduler(BaseScheduler):
     def schedule(self, pending, running, current_time):
         decision = SchedulingDecision()
         for job in sorted(pending, key=self._urgency, reverse=True):
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -238,9 +344,10 @@ class MLFQScheduler(BaseScheduler):
         decision = SchedulingDecision()
         ordered = sorted(pending, key=lambda j: (self._level(j), j.submit_time))
         for job in ordered:
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -288,9 +395,10 @@ class GavelScheduler(BaseScheduler):
             best_type = self._best_gpu_type(job)
             gpu_ids = self._find_gpus(job, gpu_type=best_type)
             if not gpu_ids:
-                gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+                res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -344,9 +452,10 @@ class PolluxScheduler(BaseScheduler):
 
         # Remaining: FIFO
         for job in sorted(rest, key=lambda j: j.submit_time):
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -388,9 +497,10 @@ class ThemisScheduler(BaseScheduler):
             return user_rho.get(job.user_id, 0.0)
 
         for job in sorted(pending, key=key):
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -427,15 +537,17 @@ class ChronusScheduler(BaseScheduler):
 
         # SLO: tightest slack first (Earliest Deadline First variant)
         for job in sorted(slo_jobs, key=lambda j: self._slack(j, current_time)):
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
 
         # BE: FIFO on remaining capacity
         for job in sorted(be_jobs, key=lambda j: j.submit_time):
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -489,15 +601,16 @@ class ElasticFlowScheduler(BaseScheduler):
                 job.num_gpus_requested = max(min_k, old_req)
             except AttributeError:
                 pass
-            gpu_ids = self._find_gpus(job)
-            if not gpu_ids and min_k > 1:
+            res = self._find_resources(job)
+            if not res and min_k > 1:
                 try:
                     job.num_gpus_requested = min_k
                 except AttributeError:
                     pass
-                gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+                res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -531,9 +644,10 @@ class MaxMinFairnessScheduler(BaseScheduler):
             self._dominant_share(j.user_id, running),
             j.submit_time,
         )):
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -558,9 +672,11 @@ class BackfillScheduler(BaseScheduler):
 
         # Try to schedule head-of-queue job
         head = ordered[0]
-        head_gpus = self._find_gpus(head)
-        if head_gpus:
-            decision.add(head, head_gpus)
+        head_res = self._find_resources(head)
+        if head_res:
+            _hg, _hm, _hc = head_res
+            decision.add(head, _hg, _hm, _hc)
+            head_gpus = _hg  # for backfill window calc
             ordered = ordered[1:]
 
         # Backfill: schedule smaller jobs that fit without delaying head
@@ -572,9 +688,10 @@ class BackfillScheduler(BaseScheduler):
             head_req = getattr(head, "num_gpus_requested", 1)
             if n_req > head_req:
                 continue
-            gpu_ids = self._find_gpus(job)
-            if gpu_ids:
-                decision.add(job, gpu_ids)
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
         return decision
 
 
