@@ -85,7 +85,7 @@ def _load_cluster_and_jobs(cluster_name, duration,
     else:
         kw = dict(duration=duration, rng_seed=seed)
         if arrival_rate:
-            kw["arrival_rate"] = arrival_rate
+            kw["mean_arrival_interval"] = arrival_rate
         if gpu_dist:
             try:
                 kw["gpu_dist"] = {int(k): float(v) for k, v in
@@ -498,7 +498,7 @@ def cmd_generate(args):
     else:
         kw = dict(duration=args.duration, rng_seed=args.seed)
         if getattr(args, "arrival_rate", None):
-            kw["arrival_rate"] = args.arrival_rate
+            kw["mean_arrival_interval"] = args.arrival_rate
         if getattr(args, "gpu_dist", None):
             try:
                 kw["gpu_dist"] = {int(k): float(v) for k, v in
