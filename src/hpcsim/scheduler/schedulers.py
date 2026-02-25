@@ -394,11 +394,13 @@ class GavelScheduler(BaseScheduler):
         for job in ordered:
             best_type = self._best_gpu_type(job)
             gpu_ids = self._find_gpus(job, gpu_type=best_type)
-            if not gpu_ids:
+            if gpu_ids:
+                decision.add(job, gpu_ids)
+            else:
                 res = self._find_resources(job)
-            if res:
-                gpus, migs, cpus = res
-                decision.add(job, gpus, migs, cpus)
+                if res:
+                    gpus, migs, cpus = res
+                    decision.add(job, gpus, migs, cpus)
         return decision
 
 
@@ -448,7 +450,7 @@ class PolluxScheduler(BaseScheduler):
         for job in sorted(elastic, key=lambda j: j.submit_time):
             _, gpu_ids = self._best_k_and_gpus(job)
             if gpu_ids:
-                decision.add(job, gpu_ids)
+                decision.add(job, gpu_ids, [], [])
 
         # Remaining: FIFO
         for job in sorted(rest, key=lambda j: j.submit_time):

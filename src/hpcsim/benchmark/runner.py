@@ -39,6 +39,7 @@ class BenchmarkConfig:
     workload_config: Optional[WorkloadConfig] = None
     num_runs:      int = 3
     sim_duration:  float = 3600.0
+    rng_seed:      int = 42
     output_csv:    Optional[str] = None
     plot_file:     Optional[str] = None
     verbose:       bool = False
