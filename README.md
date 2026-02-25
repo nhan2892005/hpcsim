@@ -21,7 +21,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh          # macOS/Linux
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex" # Windows
 
 # Clone và cài
-git clone https://github.com/your-org/hpcsim.git
+git clone https://github.com/nhan2892005/hpcsim.git
 cd hpcsim
 
 uv sync               # core (không có PyTorch)
