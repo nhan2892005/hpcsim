@@ -42,7 +42,7 @@ def run_training(
     traj_num: int = 100,
     cluster_config: str = "medium_heterogeneous_gavel",
     sim_duration: float = 86_400.0,
-    eta: float = 0.005,
+    eta: float = 0.002,
     save_dir: str = "models",
     device: str = "auto",
     seed: int = 42,
@@ -434,7 +434,7 @@ def main():
     p_train.add_argument("--cluster", default="medium_heterogeneous_gavel")
     p_train.add_argument("--duration",type=float, default=86400.0,
                          help="Episode duration in seconds (default 24h)")
-    p_train.add_argument("--eta",     type=float, default=0.005,
+    p_train.add_argument("--eta",     type=float, default=0.002,
                          help="AvgBSLD penalty factor η")
     p_train.add_argument("--save-dir",default="models")
     p_train.add_argument("--device",   default="auto")

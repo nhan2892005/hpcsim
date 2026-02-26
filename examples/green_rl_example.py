@@ -129,7 +129,7 @@ def demo_training():
         traj_num=5,          # use 100 for real training
         cluster_config="medium_heterogeneous_gavel",
         sim_duration=3600.0,
-        eta=0.005,
+        eta=0.002,
         save_dir="./models_demo",
         device="auto",
         seed=42,

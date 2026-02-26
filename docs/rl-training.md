@@ -94,7 +94,7 @@ R = ReUtil − η × AvgBSLD    (sparse, cuối episode)
 
 ReUtil  = ∫ P_green(t) dt / ∫ P_total(t) dt   (renewable utilization)
 AvgBSLD = mean[(wait + exec) / max(τ, estimated_runtime)]
-η       = trade-off factor (default: 0.005)
+η       = trade-off factor (default: 0.002)
 ```
 
 Với cluster CPU+GPU, `P_total(t)` bao gồm cả công suất GPU lẫn CPU.

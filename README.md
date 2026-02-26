@@ -140,7 +140,7 @@ R = ReUtil − η × AvgBSLD
 
 ReUtil  = ∫ P_renewable(t) dt / ∫ P_total(t) dt
 AvgBSLD = mean[ (wait_time + exec_time) / max(τ, estimated_runtime) ]
-η       = 0.005  (điều chỉnh bằng --eta)
+η       = 0.002  (điều chỉnh bằng --eta)
 ```
 
 ---

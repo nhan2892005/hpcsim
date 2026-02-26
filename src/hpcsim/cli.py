@@ -980,8 +980,8 @@ def main():
     _add_common(p_train, duration=False)
     p_train.add_argument("--duration", "-d", type=float, default=86400.0,
                          help="Episode duration in seconds (default: 86400)")
-    p_train.add_argument("--eta",      type=float, default=0.005,
-                         help="BSLD penalty factor η (default: 0.005)")
+    p_train.add_argument("--eta",      type=float, default=0.002,
+                         help="BSLD penalty factor η (default: 0.002)")
     p_train.add_argument("--device",   default="auto",
                          choices=["auto", "cpu", "cuda"])
     p_train.add_argument("--save-dir", default="models", metavar="DIR")

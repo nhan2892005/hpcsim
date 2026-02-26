@@ -95,7 +95,7 @@ class EnvConfig:
     cluster_config:    str                        = "hpc_realistic"
     renewable_config:  Optional[RenewableConfig] = None
     sim_duration_sec:  float                      = 86_400.0
-    eta:               float                      = 0.005
+    eta:               float                      = 0.002
     brown_threshold_j: float                      = 50_000.0
     seq_len:           int                        = 256
     seed:              Optional[int]              = None
