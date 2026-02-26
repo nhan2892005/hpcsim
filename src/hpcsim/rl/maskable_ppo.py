@@ -34,11 +34,16 @@ from ..scheduler.schedulers import BaseScheduler, SchedulingDecision, register
 
 def _to_scalar(x) -> float:
     """Safely convert any scalar-like (tensor, ndarray, float) to Python float."""
+    # torch.Tensor
+    if hasattr(x, "reshape") and hasattr(x, "item"):
+        return float(x.reshape(-1)[0].item())
+    # numpy scalar / 0-d array
     if hasattr(x, "item"):
-        try:
-            return float(x.item())
-        except (ValueError, RuntimeError):
-            return float(x.flat[0])
+        return float(x.item())
+    # numpy ndarray with .flat
+    if hasattr(x, "flat"):
+        return float(x.flat[0])
+    # any iterable
     if hasattr(x, "__iter__"):
         return float(next(iter(x)))
     return float(x)

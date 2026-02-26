@@ -39,11 +39,16 @@ from ..scheduler.schedulers import BaseScheduler, SchedulingDecision, register
 
 def _to_scalar(x) -> float:
     """Safely convert any scalar-like (tensor, ndarray, float) to Python float."""
+    # torch.Tensor
+    if hasattr(x, "reshape") and hasattr(x, "item"):
+        return float(x.reshape(-1)[0].item())
+    # numpy scalar / 0-d array
     if hasattr(x, "item"):
-        try:
-            return float(x.item())
-        except (ValueError, RuntimeError):
-            return float(x.flat[0])
+        return float(x.item())
+    # numpy ndarray with .flat
+    if hasattr(x, "flat"):
+        return float(x.flat[0])
+    # any iterable
     if hasattr(x, "__iter__"):
         return float(next(iter(x)))
     return float(x)
@@ -208,7 +213,13 @@ class GASMARLAgent:
 
     def remember(self, state_t, value, lp1, lp2, ac1, ac2,
                  reward, m1, m2, job_input):
-        self._rewards.append(_to_scalar(reward))
+        # Guard: reward must be scalar, not obs/tensor/array of wrong size
+        _rwd = reward
+        if hasattr(_rwd, 'numel') and _rwd.numel() > 1:   # torch multi-element
+            _rwd = _rwd.reshape(-1)[0]
+        elif hasattr(_rwd, '__len__') and len(_rwd) > 1:   # numpy multi-element
+            _rwd = _rwd.flat[0]
+        self._rewards.append(_to_scalar(_rwd))
         self._states.append(state_t.to("cpu"))
         self._lp1.append(lp1.to("cpu"))
         self._lp2.append(lp2.to("cpu"))
