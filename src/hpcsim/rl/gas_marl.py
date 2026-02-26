@@ -231,9 +231,16 @@ class GASMARLAgent:
         self._job_inputs.append(job_input.to("cpu"))
 
     def clear_memory(self):
-        (self._states, self._actions1, self._actions2,
-         self._masks1, self._masks2, self._lp1, self._lp2,
-         self._values, self._rewards, self._job_inputs) = ([],) * 10
+        self._states      = []
+        self._actions1    = []
+        self._actions2    = []
+        self._masks1      = []
+        self._masks2      = []
+        self._lp1         = []
+        self._lp2         = []
+        self._values      = []
+        self._rewards     = []
+        self._job_inputs  = []
 
     # ── GAE + Returns ─────────────────────────────────────────────────────────
 
