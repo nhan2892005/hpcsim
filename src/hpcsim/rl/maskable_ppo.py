@@ -26,7 +26,7 @@ from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 from .env import (
     HPCGreenEnv, EnvConfig,
-    MAX_QUEUE_SIZE, RUN_WIN, GREEN_WIN, CLUSTER_WIN, JOB_FEATURES,
+    MAX_QUEUE_SIZE, RUN_WIN, GREEN_WIN, CLUSTER_WIN, TOTAL_ROWS, JOB_FEATURES,
 )
 from .networks import MaskablePPOActor, MaskablePPOCritic, CategoricalMasked
 from ..cluster.cluster import Cluster
@@ -376,10 +376,9 @@ def train_maskable_ppo(
             mask = env.action_mask1()
             action, log_prob, value = agent.act(obs, mask)
 
-            total_slots = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN
-            state_t = torch.FloatTensor(obs.reshape(1, total_slots, JOB_FEATURES))
+            state_t = torch.FloatTensor(obs.reshape(1, TOTAL_ROWS, JOB_FEATURES))
             mask_t  = torch.FloatTensor(
-                np.pad(mask, (0, RUN_WIN + GREEN_WIN)).reshape(1, total_slots)
+                np.pad(mask, (0, TOTAL_ROWS - MAX_QUEUE_SIZE)).reshape(1, TOTAL_ROWS)
             )
             agent.remember(state_t, value, log_prob, action, green_rwd, mask_t)
 

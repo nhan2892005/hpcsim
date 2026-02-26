@@ -418,7 +418,7 @@ def train_gas_marl(
 
     best_reward  = float("-inf")
     t_start      = _time.time()
-    total_slots  = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN
+    total_slots  = TOTAL_ROWS
 
     if verbose:
         print(f"\n  {'='*56}")

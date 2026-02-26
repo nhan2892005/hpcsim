@@ -98,14 +98,73 @@ def _load_cluster_and_jobs(cluster_name, duration,
 
 
 def _load_workload_file(path: str) -> list:
-    from .workload.generator import Job
+    """Load a workload JSON saved by cmd_generate, reconstruct job objects."""
+    from .workload.job import (
+        TrainingJob, InferenceJob, LLMJob, HPOJob,
+        CPUJob, MIGJob, HybridJob,
+        JobType, JobStatus, SchedulingMode, ModelArch, ResourceType,
+    )
+    from .cluster.hardware import GPUType, CPUType
+    from .cluster.hardware import MIGProfile
+
+    _JOB_CLASSES = {
+        "training":       TrainingJob,
+        "inference":      InferenceJob,
+        "llm_train":      LLMJob,
+        "llm_infer":      LLMJob,
+        "hpo":            HPOJob,
+        "cpu":            CPUJob,
+        "mig":            MIGJob,
+        "hybrid":         HybridJob,
+        # by class name (from __job_class__ field)
+        "TrainingJob":    TrainingJob,
+        "InferenceJob":   InferenceJob,
+        "LLMJob":         LLMJob,
+        "HPOJob":         HPOJob,
+        "CPUJob":         CPUJob,
+        "MIGJob":         MIGJob,
+        "HybridJob":      HybridJob,
+    }
+    _ENUM_FIELDS = {
+        "job_type":        JobType,
+        "status":          JobStatus,
+        "scheduling_mode": SchedulingMode,
+        "arch":            ModelArch,
+        "gpu_type_preference": GPUType,
+        "cpu_type_preference": CPUType,
+        "mig_profile":     MIGProfile,
+        "resource_type":   ResourceType,
+    }
+
     with open(path) as f:
         data = json.load(f)
+
     jobs = []
     for d in data:
-        j = Job.__new__(Job)
-        j.__dict__.update(d)
-        jobs.append(j)
+        # Determine job class: prefer __job_class__, fall back to job_type
+        cls = _JOB_CLASSES.get(d.get("__job_class__", ""),
+              _JOB_CLASSES.get(d.get("job_type", "training"), TrainingJob))
+
+        # Convert enum string values back to enum members
+        d2 = {}
+        for k, v in d.items():
+            if k in _ENUM_FIELDS and isinstance(v, str):
+                try:
+                    d2[k] = _ENUM_FIELDS[k](v)
+                except (ValueError, KeyError):
+                    pass   # skip unknown enum values
+            else:
+                d2[k] = v
+
+        # Only pass fields that exist in the dataclass
+        import dataclasses
+        valid = {f.name for f in dataclasses.fields(cls)}
+        kwargs = {k: v for k, v in d2.items() if k in valid}
+        try:
+            jobs.append(cls(**kwargs))
+        except Exception:
+            jobs.append(TrainingJob(submit_time=d.get("submit_time", 0.0)))
+
     return jobs
 
 
@@ -388,13 +447,12 @@ def cmd_simulate(args):
 
     sched   = create_scheduler(args.scheduler, cluster)
     metrics = MetricsCollector()
-    rconf   = None if getattr(args, "no_green", False) else {"total_gpus": cluster.total_gpu_count()}
+    rconf   = None  # engine builds RenewableEnergyModule internally with correct cluster size
 
     t0 = time.time()
     SimulationEngine(cluster, sched, jobs, metrics,
                      max_sim_time=args.duration,
-                     renewable_config=rconf,
-                     seed=args.seed).run()
+                     renewable_config=rconf).run()
     elapsed = time.time() - t0
 
     summary = metrics.summary()
@@ -425,28 +483,40 @@ def _plot_simulation(metrics, path: str, title: str = ""):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     try:
+        # utilization_time_series() → (times: list, utils: list)
+        times, utils = metrics.utilization_time_series()
+        # energy data from snapshots
+        snap_times  = [s.time         for s in metrics.snapshots]
+        snap_power  = [s.power_watts  for s in metrics.snapshots]
+        snap_green  = [s.renewable_power_watts for s in metrics.snapshots]
+
         fig, axes = plt.subplots(2, 1, figsize=(12, 6))
         fig.suptitle(title, fontsize=13, fontweight="bold")
-        ts = metrics.gpu_utilization_series()
-        axes[0].fill_between(ts["time"], ts["utilization"], alpha=0.6, color="#2196F3")
+
+        # ── GPU Utilization ─────────────────────────────────────────────────
+        axes[0].fill_between(times, utils, alpha=0.6, color="#2196F3", label="GPU Util")
         axes[0].set_ylabel("GPU Utilization")
         axes[0].set_ylim(0, 1)
-        axes[0].axhline(ts["utilization"].mean(), color="red", linestyle="--",
-                        label=f"Avg {ts['utilization'].mean():.1%}")
+        if utils:
+            avg = sum(utils) / len(utils)
+            axes[0].axhline(avg, color="red", linestyle="--", label=f"Avg {avg:.1%}")
         axes[0].legend(fontsize=9)
         axes[0].grid(True, alpha=0.3)
-        te = metrics.energy_series()
-        axes[1].fill_between(te["time"], te["renewable_w"], alpha=0.5,
+
+        # ── Power / Energy ───────────────────────────────────────────────────
+        axes[1].fill_between(snap_times, snap_green, alpha=0.5,
                              color="#4CAF50", label="Renewable (W)")
-        axes[1].fill_between(te["time"], te["consumed_w"], alpha=0.3,
+        axes[1].fill_between(snap_times, snap_power, alpha=0.3,
                              color="#FF5722", label="Consumed (W)")
         axes[1].set_xlabel("Time (s)")
         axes[1].set_ylabel("Power (W)")
         axes[1].legend(fontsize=9)
         axes[1].grid(True, alpha=0.3)
+
         plt.tight_layout()
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
+        _ok(f"Plot saved → {path}")
     except Exception as e:
         _warn(f"Plot failed: {e}")
 
@@ -515,14 +585,18 @@ def cmd_generate(args):
     output = getattr(args, "output", "workload.json")
     if output.endswith(".csv"):
         import pandas as pd
-        rows = [{k: (v.value if hasattr(v, "value") else v)
-                 for k, v in j.__dict__.items() if not k.startswith("_")}
-                for j in jobs]
+        rows = [{**{k: (v.value if hasattr(v, "value") else v)
+                  for k, v in j.__dict__.items() if not k.startswith("_")},
+                  "__job_class__": type(j).__name__}
+                 for j in jobs]
         pd.DataFrame(rows).to_csv(output, index=False)
     else:
-        data = [{k: (v.value if hasattr(v, "value") else v)
+        def _job_to_dict(j):
+            d = {k: (v.value if hasattr(v, "value") else v)
                  for k, v in j.__dict__.items() if not k.startswith("_")}
-                for j in jobs]
+            d["__job_class__"] = type(j).__name__
+            return d
+        data = [_job_to_dict(j) for j in jobs]
         Path(output).write_text(json.dumps(data, indent=2, default=str))
 
     size = Path(output).stat().st_size
@@ -545,7 +619,7 @@ def cmd_replay(args):
     sched   = create_scheduler(args.scheduler, cluster)
     metrics = MetricsCollector()
     dur     = args.duration or (max(j.submit_time for j in jobs) + 3600)
-    rconf   = None if getattr(args, "no_green", False) else {"total_gpus": cluster.total_gpu_count()}
+    rconf   = None  # engine builds RenewableEnergyModule internally with correct cluster size
 
     _header(f"Replay: {Path(args.workload).name}")
     print(f"  Scheduler : {args.scheduler}  ·  Cluster: {args.cluster}")
