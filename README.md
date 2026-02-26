@@ -47,10 +47,10 @@ uv run hpcsim test
 uv run hpcsim test
 
 # 2. Simulation đơn (cluster mặc định hpc_realistic — có GPU + CPU nodes)
-uv run hpcsim simulate --scheduler gavel --plot
+uv run hpcsim simulate --scheduler gavel --plot example.png
 
 # 3. So sánh schedulers (bao gồm CPU jobs)
-uv run hpcsim benchmark --schedulers fifo,sjf,tiresias,gavel,pollux --plot
+uv run hpcsim benchmark --schedulers fifo,sjf,tiresias,gavel,pollux --plot example.png
 
 # 4. Train RL (GPU + CPU + MIG jobs)
 uv run hpcsim train --algo all --epochs 300
@@ -59,7 +59,7 @@ uv run hpcsim train --algo all --epochs 300
 uv run hpcsim compare \
     --classical fifo,tiresias,gavel,pollux \
     --rl maskable_ppo,gas_marl \
-    --plot
+    --plot example.png
 ```
 
 ---
@@ -213,14 +213,14 @@ uv run hpcsim simulate \
     --duration 86400 \
     --arrival-rate 30 \
     --seed 42 \
-    --plot \
+    --plot example.png \
     --output-json results_gavel.json
 
 # Cluster A100 với MIG
 uv run hpcsim simulate \
     --scheduler fifo \
     --cluster a100_mig_cluster \
-    --plot
+    --plot example.png
 
 # --- Benchmark ---
 
@@ -231,7 +231,7 @@ uv run hpcsim benchmark \
     --runs 5 \
     --duration 86400 \
     --output-csv bench.csv \
-    --plot
+    --plot example.png
 
 # --- Workload ---
 
@@ -275,7 +275,7 @@ uv run hpcsim compare \
     --cluster hpc_realistic \
     --runs 5 \
     --output-csv compare.csv \
-    --plot
+    --plot example.png
 
 # --- Plots ---
 uv run hpcsim plot --type learning-curve --input models/maskable_ppo/train_log.csv
@@ -365,7 +365,7 @@ uv run hpcsim eval --model-dir models/ --episodes 30 --output-csv eval.csv
 uv run hpcsim compare \
     --classical fifo,tiresias,gavel,pollux \
     --rl maskable_ppo,gas_marl \
-    --runs 5 --plot --output-csv compare.csv
+    --runs 5 --plot example.png --output-csv compare.csv
 
 # Plot learning curves
 uv run hpcsim plot --type learning-curve \
