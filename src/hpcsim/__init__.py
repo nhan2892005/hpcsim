@@ -8,6 +8,10 @@ from .workload.job      import (
 )
 from .workload.generator import WorkloadGenerator, WorkloadConfig, TRACE_CONFIGS
 from .scheduler.schedulers import create_scheduler, list_schedulers, register_factory
+from .scheduler.backfill import (
+    BackfillWrapper, EASYBackfillPolicy, GreenBackfillPolicy,
+    create_backfill_policy, wrap_with_backfill,
+)
 from .simulator.engine import SimulationEngine, SimulationResult
 from .metrics.collector import MetricsCollector
 from .benchmark.runner import BenchmarkRunner, BenchmarkConfig
@@ -18,6 +22,8 @@ __all__ = [
     "TrainingJob", "InferenceJob", "LLMJob", "HPOJob",
     "WorkloadGenerator", "WorkloadConfig", "TRACE_CONFIGS",
     "create_scheduler", "list_schedulers", "register_factory",
+    "BackfillWrapper", "EASYBackfillPolicy", "GreenBackfillPolicy",
+    "create_backfill_policy", "wrap_with_backfill",
     "SimulationEngine", "SimulationResult",
     "MetricsCollector",
     "BenchmarkRunner", "BenchmarkConfig",

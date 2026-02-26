@@ -43,6 +43,9 @@ class BenchmarkConfig:
     output_csv:    Optional[str] = None
     plot_file:     Optional[str] = None
     verbose:       bool = False
+    # Backfill policy applied to every scheduler in the benchmark.
+    # "none" (default) | "easy" (EASY-Backfilling) | "green" (Green-Backfilling)
+    backfill:      str = "none"
 
 
 @dataclass
@@ -89,7 +92,18 @@ class BenchmarkRunner:
         for run_idx, seed in enumerate(base_seeds):
             for sched_name in schedulers:
                 cluster, jobs = _make_workload(cfg, seed)
-                scheduler = create_scheduler(sched_name, cluster)
+                # Build scheduler, optionally wrapped with backfill policy
+                from ..scheduler.backfill import wrap_with_backfill
+                from ..energy.renewable import RenewableEnergyModule as _REM
+                _re = None
+                if cfg.backfill == "green":
+                    _re = _REM(total_gpus=cluster.total_gpu_count(),
+                               sim_duration=cfg.sim_duration)
+                scheduler = wrap_with_backfill(
+                    create_scheduler(sched_name, cluster),
+                    cfg.backfill,
+                    renewable=_re,
+                )
                 metrics = MetricsCollector()
                 engine = SimulationEngine(
                     cluster, scheduler, jobs, metrics,

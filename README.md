@@ -7,7 +7,7 @@ Simulator nghiên cứu các thuật toán lập lịch cho HPC heterogeneous cl
 - **Heterogeneous Cluster thực tế**: GPU-only, CPU-only, Mixed CPU+GPU, MIG (A100/H100), MPS
 - **3 loại tài nguyên**: GPU vật lý, CPU cores, MIG slices — cấp phát độc lập
 - **5 loại job**: TrainingJob, InferenceJob, LLMJob, HPOJob, CPUJob, MIGJob, HybridJob
-- **14 scheduler**: FIFO, SJF, Tiresias, Gavel, Pollux, Themis, Chronus, ElasticFlow, MaxMin, Backfill + 2 RL (MaskablePPO, GAS-MARL)
+- **13 scheduler + BackfillWrapper**: FIFO, SJF, Tiresias, Gavel, Pollux, Themis, Chronus, ElasticFlow, MaxMin + 2 RL (MaskablePPO, GAS-MARL)
 - **RL state space 121 × 12**: Queue + Running + Green forecast + Cluster state
 - **Năng lượng xanh**: Solar + Wind model, reward R = ReUtil − η × AvgBSLD
 
@@ -157,7 +157,8 @@ hpcsim/
 │   │   ├── job.py           # TrainingJob, CPUJob, MIGJob, HybridJob, ...
 │   │   └── generator.py     # WorkloadGenerator, WorkloadConfig
 │   ├── scheduler/
-│   │   └── schedulers.py    # 14 schedulers (BaseScheduler, ...)
+│   │   ├── schedulers.py    # 13 schedulers (BaseScheduler, SchedulingDecision)
+│   │   └── backfill.py      # BackfillWrapper, EASYBackfillPolicy, GreenBackfillPolicy
 │   ├── simulator/
 │   │   └── engine.py        # Discrete-event simulation engine
 │   ├── metrics/
@@ -374,15 +375,104 @@ uv run hpcsim plot --type learning-curve \
     --input models/gas_marl/train_log.csv
 ```
 
+
+## Backfilling Policies
+
+Backfilling is a **policy applied on top of any scheduler** — it fills idle
+resource gaps to improve utilisation without delaying the head-of-queue job.
+
+### Available policies
+
+| Policy | CLI flag | Description |
+|--------|----------|-------------|
+| None   | `--backfill none` | No backfilling (default) |
+| EASY   | `--backfill easy` | Standard HPC backfilling — FCFS-ordered, no energy filter |
+| Green  | `--backfill green` | Green-Backfilling (GAS-MARL §4.3) — sorts by `re×q×p`, filters high-brown-energy jobs |
+
+### Usage
+
+```bash
+# Simulate with EASY backfilling
+hpcsim simulate --scheduler fifo  --backfill easy  --plot out.png
+
+# Simulate with Green backfilling (GAS-MARL best combination)
+hpcsim simulate --scheduler gas_marl --backfill green --plot out.png
+
+# Benchmark all schedulers with Green backfilling
+hpcsim benchmark --schedulers fifo,gavel,gas_marl --backfill green --plot bench.png
+
+# Replay with EASY backfilling
+hpcsim replay --workload trace.json --scheduler gavel --backfill easy
+```
+
+### Python API
+
+```python
+from hpcsim.scheduler.backfill import (
+    BackfillWrapper, EASYBackfillPolicy, GreenBackfillPolicy,
+    wrap_with_backfill,
+)
+from hpcsim import create_scheduler, Cluster, CLUSTER_CONFIGS
+from hpcsim.energy.renewable import RenewableEnergyModule
+
+cluster = Cluster(CLUSTER_CONFIGS["medium_heterogeneous_gavel"])
+re      = RenewableEnergyModule(total_gpus=cluster.total_gpus(), sim_duration=86400)
+
+# Any primary scheduler + any policy
+sched = BackfillWrapper(
+    primary = create_scheduler("gavel", cluster),
+    policy  = GreenBackfillPolicy(re),
+)
+
+# Or use the convenience factory
+sched = wrap_with_backfill(create_scheduler("fifo", cluster), "easy")
+```
+
+### Architecture
+
+```
+┌────────────────────────────────────────────────┐
+│           Primary Scheduler                     │
+│  FIFO / SJF / Gavel / GAS-MARL / PPO / ...    │
+│  → selects job + optional delay action          │
+└───────────────────┬────────────────────────────┘
+                    │  blocked or delayed
+                    ▼
+┌────────────────────────────────────────────────┐
+│           BackfillPolicy                        │
+│  EASY  → submit-time order, window constraint  │
+│  Green → L_j priority, brown-energy filter     │
+└────────────────────────────────────────────────┘
+```
+
+> **GAS-MARL + Green-Backfilling** is the best combination per the paper:
+> +37–51% renewable utilisation and −13–85% avg bounded slowdown vs FCFS+EASY.
+
+---
+
+### 3. Nghiên cứu ảnh hưởng của η
+
+```bash
+# Train với nhiều giá trị η, cùng Green-Backfilling (theo paper §5.4.1)
+for eta in 0.001 0.002 0.003 0.005 0.008 0.01; do
+    uv run hpcsim train \
+        --algo gas_marl \
+        --epochs 300 \
+        --backfill green \
+        --eta $eta \
+        --save-dir models/eta_${eta}/
+done
+```
+
 ---
 
 ## Tài liệu chi tiết
 
 | Tài liệu | Nội dung |
 |----------|---------|
-| [docs/simulation-guide.md](docs/simulation-guide.md) | Cluster, NodeSpec, Job API, Metrics |
+| [docs/simulation-guide.md](docs/simulation-guide.md) | Cluster, NodeSpec, Job API, BackfillWrapper, Metrics |
 | [docs/rl-training.md](docs/rl-training.md) | State space, Action masking CPU/MIG, Training, Eval |
-| [docs/custom-scheduler.md](docs/custom-scheduler.md) | Viết scheduler mới kế thừa BaseScheduler |
+| [docs/custom-scheduler.md](docs/custom-scheduler.md) | Viết scheduler mới + tích hợp BackfillWrapper |
 
 ---
 

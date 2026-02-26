@@ -178,17 +178,17 @@ job = HybridJob(
 from hpcsim.workload.generator import WorkloadGenerator, WorkloadConfig
 
 config = WorkloadConfig(
-    duration=86400,           # 24 giờ
+    duration=86400,            # 24 giờ
     arrival_process="poisson", # hoặc "pareto", "diurnal"
-    mean_arrival_interval=30, # giây
+    mean_arrival_interval=30,  # giây
     # Mix loại job (mặc định v0.3):
     training_fraction=0.62,
     inference_fraction=0.13,
     llm_fraction=0.08,
     hpo_fraction=0.04,
-    cpu_fraction=0.08,        # CPU-only jobs
-    mig_fraction=0.03,        # MIG slice jobs
-    hybrid_fraction=0.02,     # CPU+GPU hybrid
+    cpu_fraction=0.08,         # CPU-only jobs
+    mig_fraction=0.03,         # MIG slice jobs
+    hybrid_fraction=0.02,      # CPU+GPU hybrid
     rng_seed=42,
 )
 
@@ -203,23 +203,194 @@ hpcsim generate --trace alibaba --output workload.csv
 
 ---
 
+## Backfilling Policies
+
+Backfilling là **policy độc lập**, bọc ngoài bất kỳ primary scheduler nào qua `BackfillWrapper`. Nó lấp khoảng trống tài nguyên khi job bị blocked hoặc delayed, không thay đổi logic scheduler chính.
+
+### Kiến trúc hai tầng
+
+```
+┌─────────────────────────────────────────────────┐
+│           Primary Scheduler                      │
+│  FIFO / Gavel / GAS-MARL / MaskablePPO / ...   │
+│  → chọn job + quyết định delay (GAS-MARL)        │
+└────────────────────┬────────────────────────────┘
+                     │  blocked hoặc delay
+                     ▼
+┌─────────────────────────────────────────────────┐
+│           BackfillPolicy                         │
+│  EASY  → submit-time order, window constraint   │
+│  Green → L_j = re×q×p priority, brown < σ filter│
+└─────────────────────────────────────────────────┘
+```
+
+### EASY-Backfilling
+
+HPC chuẩn — backfill job nếu không delay head-of-queue:
+
+```python
+from hpcsim.scheduler.backfill import BackfillWrapper, EASYBackfillPolicy
+from hpcsim.scheduler.schedulers import FIFOScheduler
+
+sched = BackfillWrapper(
+    primary = FIFOScheduler(cluster),
+    policy  = EASYBackfillPolicy(),
+)
+# CLI: --backfill easy
+```
+
+Cơ chế: duyệt queue theo `submit_time`, cho phép job `j` chạy sớm nếu:
+- `n_req ≤ free_resources`
+- `current_time + runtime_j ≤ shadow_time` (không delay head job)
+
+### Green-Backfilling
+
+Thiết kế cho GAS-MARL — ưu tiên job ít tốn brown energy:
+
+```python
+from hpcsim.scheduler.backfill import BackfillWrapper, GreenBackfillPolicy
+from hpcsim.energy.renewable import RenewableEnergyModule
+
+re    = RenewableEnergyModule(total_gpus=cluster.total_gpus(), sim_duration=86400)
+sched = BackfillWrapper(
+    primary = create_scheduler("gas_marl", cluster),
+    policy  = GreenBackfillPolicy(re),
+)
+# CLI: --backfill green
+```
+
+Cơ chế (GAS-MARL Algorithm 2):
+1. Sắp xếp candidates theo `L_j = re_j × q_j × p_j` tăng dần (job nhỏ trước)
+2. Chấp nhận job `j` nếu: `est_finish ≤ max_finish_time` **AND** `brown_energy_j < σ` (σ = 50,000 J)
+3. `brown_energy_j = max(0, P_job − P_renewable) × runtime`
+
+### Convenience factory
+
+```python
+from hpcsim import create_scheduler, wrap_with_backfill
+from hpcsim.energy.renewable import RenewableEnergyModule
+
+re = RenewableEnergyModule(total_gpus=cluster.total_gpus(), sim_duration=86400)
+
+# Tự động wrap đúng policy
+sched = wrap_with_backfill(create_scheduler("fifo",     cluster), "easy")
+sched = wrap_with_backfill(create_scheduler("gavel",    cluster), "green", renewable=re)
+sched = wrap_with_backfill(create_scheduler("gas_marl", cluster), "green", renewable=re)
+sched = wrap_with_backfill(create_scheduler("fifo",     cluster), "none")  # = không wrap
+```
+
+### CLI
+
+```bash
+# Không backfilling (mặc định)
+uv run hpcsim simulate --scheduler fifo --cluster hpc_realistic
+
+# EASY-Backfilling
+uv run hpcsim simulate --scheduler fifo  --backfill easy  --plot fifo_easy.png
+
+# Green-Backfilling
+uv run hpcsim simulate --scheduler gavel --backfill green --plot gavel_green.png
+uv run hpcsim simulate --scheduler gas_marl --backfill green --plot gasmarl.png
+
+# Benchmark với backfilling
+uv run hpcsim benchmark \
+    --schedulers fifo,gavel,gas_marl \
+    --backfill green \
+    --runs 5 \
+    --plot bench_green.png
+
+# Replay với backfilling
+uv run hpcsim replay \
+    --workload workload.json \
+    --scheduler gavel \
+    --backfill easy
+```
+
+### Kết hợp scheduler × backfill
+
+| Primary | `--backfill none` | `--backfill easy` | `--backfill green` |
+|---------|:-----------------:|:-----------------:|:------------------:|
+| FIFO | baseline | ↑ util | ↑ ReUtil |
+| SJF | — | ↑ util | ↑ ReUtil |
+| Gavel | — | ↑ util | ↑↑ ReUtil |
+| MaskablePPO | — | ↑ util | ↑↑ ReUtil |
+| **GAS-MARL** | — | ↑ | **↑↑↑ best combo** |
+
+> GAS-MARL + Green-Backfilling: +37–51% ReUtil, −13–85% AvgBSLD vs FCFS+EASY (Chen et al., FGCS 2025).
+
+---
+
+## Chạy Simulation
+
+### Đơn giản
+
+```bash
+uv run hpcsim simulate \
+    --scheduler gavel \
+    --cluster hpc_realistic \
+    --duration 86400 \
+    --backfill green \
+    --plot results.png \
+    --output-json results.json
+```
+
+### Python API đầy đủ
+
+```python
+from hpcsim.cluster.cluster import Cluster, CLUSTER_CONFIGS
+from hpcsim.workload.generator import WorkloadGenerator, WorkloadConfig
+from hpcsim.simulator.engine import SimulationEngine
+from hpcsim.metrics.collector import MetricsCollector
+from hpcsim import create_scheduler, wrap_with_backfill
+from hpcsim.energy.renewable import RenewableEnergyModule
+
+# Setup
+cluster = Cluster(CLUSTER_CONFIGS["hpc_realistic"])
+jobs    = WorkloadGenerator(WorkloadConfig(duration=86400, rng_seed=42)).generate()
+re      = RenewableEnergyModule(total_gpus=cluster.total_gpus(), sim_duration=86400)
+
+# Scheduler + Backfill
+sched   = wrap_with_backfill(create_scheduler("gas_marl", cluster), "green", renewable=re)
+metrics = MetricsCollector()
+
+# Run
+SimulationEngine(cluster, sched, jobs, metrics, max_sim_time=86400).run()
+s = metrics.summary()
+print(f"ReUtil={s['renewable_energy_utilization']:.1%}  AvgBSLD={s['avg_bsld']:.2f}")
+```
+
+---
+
 ## Metrics
 
 ```python
-summary = sim.run()
+summary = metrics.summary()
 
-# GPU metrics
-summary["avg_gpu_util"]      # GPU utilization trung bình
-summary["avg_jct_s"]         # Average Job Completion Time
-summary["avg_bsld"]          # Average Bounded Slowdown
+# Throughput
+summary["jobs_completed"]     # tổng jobs hoàn thành
+summary["avg_jct_s"]          # Average Job Completion Time (s)
+summary["median_jct_s"]
+summary["p90_jct_s"]
+summary["avg_queue_s"]        # thời gian chờ trung bình
 
-# CPU metrics (mới)
-summary["avg_cpu_util"]      # CPU core utilization trung bình
-summary["cpu_jobs_completed"]  # Số CPU-only jobs hoàn thành
-summary["mig_jobs_completed"]  # Số MIG jobs hoàn thành
-summary["hybrid_jobs_completed"]
+# Chất lượng lập lịch
+summary["avg_bsld"]           # Average Bounded Slowdown
+summary["jains_fairness"]     # Jain's Fairness Index (0..1)
+summary["deadline_miss_pct"]  # % jobs trễ deadline
 
-# Energy metrics
+# Utilization
+summary["avg_gpu_util"]       # GPU utilization trung bình
+summary["avg_cpu_util"]       # CPU core utilization trung bình
+
+# Energy
 summary["renewable_energy_utilization"]  # ReUtil (0..1)
 summary["total_energy_kwh"]
+summary["renewable_energy_wh"]
+summary["brown_energy_wh"]
+
+# Job breakdown
+summary["cpu_jobs_completed"]
+summary["mig_jobs_completed"]
+summary["hybrid_jobs_completed"]
+summary["preemptions"]
 ```

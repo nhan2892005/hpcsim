@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hpcsim"
-version = "0.2.1"
+version = "0.3.0"
 description = "HPC GPU Cluster Simulator for ML/DL/LLM Workloads with Green-Aware RL Scheduling"
 readme = "README.md"
 license = { text = "MIT" }

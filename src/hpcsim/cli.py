@@ -63,6 +63,24 @@ def _header(title: str):
     print(f"{_c('═' * w, CYAN)}")
 
 def _ok(msg):   print(f"  {_c('✓', GREEN)} {msg}")
+
+
+def _build_scheduler(sched_name: str, cluster, backfill: str = "none",
+                     renewable=None):
+    """
+    Create a scheduler, optionally wrapped with a backfill policy.
+
+    Args:
+        sched_name : scheduler name (e.g. "fifo", "gavel", "gas_marl")
+        cluster    : Cluster instance
+        backfill   : "none" | "easy" | "green"
+        renewable  : RenewableEnergyModule (required for "green")
+    """
+    from .scheduler.schedulers import create_scheduler
+    from .scheduler.backfill import wrap_with_backfill
+    sched = create_scheduler(sched_name, cluster)
+    return wrap_with_backfill(sched, backfill, renewable=renewable)
+
 def _warn(msg): print(f"  {_c('⚠', YELLOW)} {msg}")
 def _err(msg):  print(f"  {_c('✗', RED)} {msg}", file=sys.stderr)
 
@@ -269,7 +287,7 @@ def cmd_list(args):
         descs = {
             "fifo": "First-In-First-Out (baseline)",
             "sjf": "Shortest Job First",
-            "backfill": "EASY Backfilling",
+            "backfill": "EASY Backfilling (deprecated — use --backfill easy)",
             "sjf_backfill": "SJF + Backfilling",
             "tiresias": "GPU-time LAS (Tiresias)",
             "elas": "Elastic scheduling",
@@ -445,7 +463,14 @@ def cmd_simulate(args):
     print(f"  Jobs     : {len(jobs)} submitted")
     print(f"  GPUs     : {cluster.total_gpu_count()} total")
 
-    sched   = create_scheduler(args.scheduler, cluster)
+    backfill_policy = getattr(args, "backfill", "none") or "none"
+    if backfill_policy == "green":
+        from .energy.renewable import RenewableEnergyModule
+        _re_mod = RenewableEnergyModule(
+            total_gpus=cluster.total_gpu_count(), sim_duration=args.duration)
+    else:
+        _re_mod = None
+    sched   = _build_scheduler(args.scheduler, cluster, backfill_policy, _re_mod)
     metrics = MetricsCollector()
     rconf   = None  # engine builds RenewableEnergyModule internally with correct cluster size
 
@@ -536,6 +561,7 @@ def cmd_benchmark(args):
     print(f"  Cluster    : {args.cluster}")
     print(f"  Runs       : {args.runs}  ·  Duration: {args.duration:.0f}s")
 
+    backfill_policy = getattr(args, "backfill", "none") or "none"
     cfg = BenchmarkConfig(
         schedulers=scheds,
         cluster_config=args.cluster,
@@ -545,6 +571,7 @@ def cmd_benchmark(args):
         plot_file=getattr(args, "plot", None),
         verbose=getattr(args, "verbose", False),
         rng_seed=args.seed,
+        backfill=backfill_policy,
     )
     runner  = BenchmarkRunner(cfg)
     results = runner.run()
@@ -616,9 +643,15 @@ def cmd_replay(args):
 
     jobs    = _load_workload_file(args.workload)
     cluster = Cluster(CLUSTER_CONFIGS[args.cluster])
-    sched   = create_scheduler(args.scheduler, cluster)
-    metrics = MetricsCollector()
     dur     = args.duration or (max(j.submit_time for j in jobs) + 3600)
+    backfill_policy = getattr(args, "backfill", "none") or "none"
+    if backfill_policy == "green":
+        from .energy.renewable import RenewableEnergyModule
+        _re_mod = RenewableEnergyModule(total_gpus=cluster.total_gpu_count(), sim_duration=dur)
+    else:
+        _re_mod = None
+    sched   = _build_scheduler(args.scheduler, cluster, backfill_policy, _re_mod)
+    metrics = MetricsCollector()
     rconf   = None  # engine builds RenewableEnergyModule internally with correct cluster size
 
     _header(f"Replay: {Path(args.workload).name}")
@@ -868,7 +901,7 @@ def main():
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="hpcsim 0.2.0")
+    parser.add_argument("--version", action="version", version="hpcsim 0.3.0")
 
     sub = parser.add_subparsers(dest="command", metavar="<command>",
                                 title="Available commands")
@@ -906,6 +939,9 @@ def main():
                        help="Replay from saved workload JSON")
     p_sim.add_argument("--no-green", action="store_true",
                        help="Disable renewable energy model")
+    p_sim.add_argument("--backfill", default="none",
+                       choices=["none", "easy", "green"],
+                       help="Backfill policy: none (default) | easy (EASY-Backfilling) | green (Green-Backfilling)")
     p_sim.add_argument("--plot",        default=None, metavar="FILE")
     p_sim.add_argument("--output-json", default=None, metavar="FILE")
     p_sim.add_argument("--output-csv",  default=None, metavar="FILE")
@@ -924,6 +960,9 @@ def main():
     _add_common(p_bench)
     p_bench.add_argument("--runs", "-n", type=int, default=3, dest="runs")
     p_bench.add_argument("--arrival-rate", type=float, default=None, metavar="RATE")
+    p_bench.add_argument("--backfill", default="none",
+                         choices=["none", "easy", "green"],
+                         help="Backfill policy applied to all schedulers: none | easy | green")
     p_bench.add_argument("--output-csv", default=None, metavar="FILE")
     p_bench.add_argument("--plot",       default=None, metavar="FILE")
     p_bench.add_argument("--verbose",    action="store_true")
@@ -957,6 +996,9 @@ def main():
     p_replay.add_argument("--scheduler", "-s", default="fifo", metavar="NAME")
     _add_common(p_replay)
     p_replay.add_argument("--no-green",    action="store_true")
+    p_replay.add_argument("--backfill", default="none",
+                          choices=["none", "easy", "green"],
+                          help="Backfill policy: none | easy | green")
     p_replay.add_argument("--output-json", default=None, metavar="FILE")
     p_replay.add_argument("--plot",        default=None, metavar="FILE")
 

@@ -612,11 +612,23 @@ class GASMARLScheduler(BaseScheduler):
         self._delayed_until: dict[str, float] = {}
 
     def schedule(self, pending, running, current_time):
+        """
+        Core scheduling decision for GAS-MARL.
+
+        Returns a SchedulingDecision that:
+        - Schedules the selected job immediately (ac2 == 0), OR
+        - Records a delay for the selected job (ac2 > 0) and sets
+          decision.delay_info so that BackfillWrapper can compute the
+          correct Green-Backfilling window (see scheduler/backfill.py §4.3).
+
+        Backfilling is intentionally NOT performed here — it is the
+        responsibility of BackfillWrapper(GASMARLScheduler(...), GreenBackfillPolicy(...)).
+        """
         decision = SchedulingDecision()
         if not pending:
             return decision
 
-        # Release delayed jobs that have passed their release time
+        # Only consider jobs whose delay window has expired
         active_pending = [
             j for j in pending
             if self._delayed_until.get(j.job_id, 0.0) <= current_time
@@ -624,9 +636,9 @@ class GASMARLScheduler(BaseScheduler):
         if not active_pending:
             return decision
 
-        # Sync env state
+        # Feed state into agent
         self._sync_env(active_pending, running, current_time)
-        obs      = self._env._get_obs()
+        obs       = self._env._get_obs()
         inv_mask1 = 1.0 - self._env.action_mask1()
         inv_mask2 = self._env.action_mask2()
 
@@ -634,68 +646,38 @@ class GASMARLScheduler(BaseScheduler):
         ac1 = min(ac1, len(active_pending) - 1)
         selected_job = active_pending[ac1]
 
-        # Handle delay decision
         if ac2 > 0:
+            # ── Delay decision ────────────────────────────────────────────
             release_t = self._compute_release_time(ac2, running, current_time)
             self._delayed_until[selected_job.job_id] = release_t
-            # Green-backfilling: schedule other valid jobs during delay
-            for j in active_pending:
-                if j.job_id == selected_job.job_id:
-                    continue
-                if self._passes_green_backfill(j, current_time, release_t):
-                    gids = self._find_gpus(j, prefer_consolidated=True)
-                    if gids:
-                        decision.add(j, gids)
+            # Expose delay metadata so BackfillWrapper can open the right window
+            decision.delay_info = {
+                "delay_type":    ac2,
+                "release_time":  release_t,
+                "head_job_id":   selected_job.job_id,
+                "head_req_gpus": getattr(selected_job, "num_gpus_requested", 1),
+            }
         else:
-            # Schedule selected job immediately
+            # ── Immediate schedule ────────────────────────────────────────
             self._delayed_until.pop(selected_job.job_id, None)
             gids = self._find_gpus(selected_job, prefer_consolidated=True)
             if gids:
                 decision.add(selected_job, gids)
-            # Greedy fill
-            for j in active_pending:
-                if j.job_id == selected_job.job_id:
-                    continue
-                if self._passes_green_backfill(j, current_time, float("inf")):
-                    gids = self._find_gpus(j, prefer_consolidated=True)
-                    if gids:
-                        decision.add(j, gids)
 
         return decision
 
-    def _compute_release_time(self, ac2, running, current_time):
+    def _compute_release_time(self, ac2: int, running: list, current_time: float) -> float:
+        """Translate action index → absolute release timestamp."""
         if ac2 <= DELAY_MAX_JOB_NUM:
+            # type 2: wait until N running jobs complete (capped at +3600 s)
             n_wait = min(ac2, len(running))
             if n_wait > 0 and running:
-                # Estimate completion times (use attained_service as proxy)
-                sorted_run = sorted(running, key=lambda j: getattr(j, "start_time", current_time) or current_time)
-                capped = current_time + 3600.0
-                return min(capped, current_time + 300.0 * n_wait)
+                return min(current_time + 3600.0, current_time + 300.0 * n_wait)
             return current_time
+        # type 3: fixed delay from DELAY_TIMES list
         dt_idx = ac2 - (DELAY_MAX_JOB_NUM + 1)
         dt_idx = min(dt_idx, len(DELAY_TIMES) - 1)
         return current_time + DELAY_TIMES[dt_idx]
-
-    def _passes_green_backfill(self, job, current_time, max_finish_time) -> bool:
-        """
-        Green-Backfilling acceptance criterion: estimated brown energy < threshold.
-        (GAS-MARL Algorithm 2, Line 7)
-        """
-        n_gpu     = self._gpu_count_for_job(job)
-        power_w   = self._env._estimate_job_power(job)
-        runtime   = self._env._estimate_runtime(job)
-        re_avail  = self._env._re.available_power_watts(current_time)
-        cluster_p = self._env._re.idle_power_watts(self.cluster.total_gpus())
-        running_p = sum(
-            self._env._re.job_power_watts(
-                len(getattr(j, "allocated_gpus", [])) or 1
-            )
-            for j in []  # simplified
-        )
-        total_with_job = cluster_p + running_p + power_w
-        brown_power = max(0.0, total_with_job - re_avail)
-        brown_energy = brown_power * runtime
-        return brown_energy < self._env_cfg.brown_threshold_j
 
     def _gpu_count_for_job(self, job) -> int:
         n = getattr(job, "num_gpus_requested", 1)

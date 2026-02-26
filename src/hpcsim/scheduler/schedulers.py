@@ -60,6 +60,11 @@ class Allocation:
 class SchedulingDecision:
     allocations: list[Allocation] = field(default_factory=list)
     preemptions: list[str]        = field(default_factory=list)  # job_ids
+    # Optional metadata set by GASMARLScheduler when it issues a delay action.
+    # BackfillWrapper reads this to compute the correct backfill window.
+    # Schema: {"delay_type": int, "release_time": float, "head_job_id": str,
+    #           "head_req_gpus": int}
+    delay_info: Optional[dict]    = field(default=None)
 
     def add(self, job: AnyJob, gpu_ids: list[str],
             mig_ids: list[str] | None = None,
@@ -654,21 +659,54 @@ class MaxMinFairnessScheduler(BaseScheduler):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 12. Backfill (EASY Conservative)
+# 12. Backfill — deprecated stub (use BackfillWrapper from scheduler.backfill)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @register
 class BackfillScheduler(BaseScheduler):
     """
-    Conservative Backfill (EASY) — standard HPC cluster scheduling.
-    Reserves for highest-priority job; fills gaps with smaller jobs.
+    DEPRECATED — kept for backward compatibility only.
+
+    Use BackfillWrapper from hpcsim.scheduler.backfill instead:
+
+        from hpcsim.scheduler.backfill import BackfillWrapper, EASYBackfillPolicy
+        sched = BackfillWrapper(FIFOScheduler(cluster), EASYBackfillPolicy())
+
+    This stub now behaves as FIFO + EASY-Backfilling via the wrapper.
     """
     name = "backfill"
 
     def schedule(self, pending, running, current_time):
+        import warnings
+        warnings.warn(
+            "BackfillScheduler is deprecated. "
+            "Use BackfillWrapper(primary, EASYBackfillPolicy()) instead.",
+            DeprecationWarning, stacklevel=2,
+        )
         decision = SchedulingDecision()
         if not pending:
             return decision
+        ordered = sorted(pending, key=lambda j: j.submit_time)
+        # Head job
+        head = ordered[0]
+        head_res = self._find_resources(head)
+        if head_res:
+            gpus, migs, cpus = head_res
+            decision.add(head, gpus, migs, cpus)
+        # Simple EASY fill: smaller jobs that fit
+        free_gpus = self.cluster.free_gpu_count()
+        for job in ordered[1:]:
+            n_req = getattr(job, "num_gpus_requested", 1)
+            if n_req > free_gpus:
+                continue
+            res = self._find_resources(job)
+            if res:
+                gpus, migs, cpus = res
+                decision.add(job, gpus, migs, cpus)
+                free_gpus -= n_req
+        return decision
+
+
 
         ordered = sorted(pending, key=lambda j: j.submit_time)
 
