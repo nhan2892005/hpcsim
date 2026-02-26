@@ -37,6 +37,18 @@ from .networks import GASMARLActor, GASMARLCritic
 from ..cluster.cluster import Cluster
 from ..scheduler.schedulers import BaseScheduler, SchedulingDecision, register
 
+def _to_scalar(x) -> float:
+    """Safely convert any scalar-like (tensor, ndarray, float) to Python float."""
+    if hasattr(x, "item"):
+        try:
+            return float(x.item())
+        except (ValueError, RuntimeError):
+            return float(x.flat[0])
+    if hasattr(x, "__iter__"):
+        return float(next(iter(x)))
+    return float(x)
+
+
 
 # ─── Experience Buffer ────────────────────────────────────────────────────────
 
@@ -196,10 +208,7 @@ class GASMARLAgent:
 
     def remember(self, state_t, value, lp1, lp2, ac1, ac2,
                  reward, m1, m2, job_input):
-        _r = reward
-        if hasattr(_r, 'item'): _r = _r.item()   # tensor → scalar
-        elif hasattr(_r, '__len__'): _r = float(_r.flat[0])  # array → scalar
-        self._rewards.append(float(_r))
+        self._rewards.append(_to_scalar(reward))
         self._states.append(state_t.to("cpu"))
         self._lp1.append(lp1.to("cpu"))
         self._lp2.append(lp2.to("cpu"))
@@ -222,7 +231,7 @@ class GASMARLAgent:
         return scipy.signal.lfilter([1], [1, -discount], x[::-1])[::-1]
 
     def finish_path(self, last_val=0.0):
-        rews   = np.append(np.array([float(x) for x in self._rewards], dtype=np.float32), float(last_val))
+        rews   = np.append(np.array([_to_scalar(x) for x in self._rewards], dtype=np.float32), _to_scalar(last_val))
         values = torch.cat(self._values).squeeze(-1).numpy()
         vals   = np.append(values, last_val)
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]

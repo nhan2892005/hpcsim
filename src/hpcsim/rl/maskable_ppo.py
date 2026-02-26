@@ -32,6 +32,18 @@ from .networks import MaskablePPOActor, MaskablePPOCritic, CategoricalMasked
 from ..cluster.cluster import Cluster
 from ..scheduler.schedulers import BaseScheduler, SchedulingDecision, register
 
+def _to_scalar(x) -> float:
+    """Safely convert any scalar-like (tensor, ndarray, float) to Python float."""
+    if hasattr(x, "item"):
+        try:
+            return float(x.item())
+        except (ValueError, RuntimeError):
+            return float(x.flat[0])
+    if hasattr(x, "__iter__"):
+        return float(next(iter(x)))
+    return float(x)
+
+
 
 # ─── Experience Buffer ────────────────────────────────────────────────────────
 
@@ -154,10 +166,7 @@ class MaskablePPOAgent:
         return int(logits.argmax(dim=-1).item())
 
     def remember(self, state_t, value, log_prob, action, reward, mask_t):
-        _r = reward
-        if hasattr(_r, 'item'): _r = _r.item()
-        elif hasattr(_r, '__len__'): _r = float(_r.flat[0])
-        self._rewards.append(float(_r))
+        self._rewards.append(_to_scalar(reward))
         self._states.append(state_t.to("cpu"))
         self._log_probs.append(log_prob.to("cpu"))
         self._values.append(value.to("cpu"))
@@ -175,7 +184,7 @@ class MaskablePPOAgent:
         return scipy.signal.lfilter([1], [1, -discount], x[::-1])[::-1]
 
     def finish_path(self, last_val: float = 0.0):
-        rews = np.append(np.array([float(x) for x in self._rewards], dtype=np.float32), float(last_val))
+        rews = np.append(np.array([_to_scalar(x) for x in self._rewards], dtype=np.float32), _to_scalar(last_val))
         values = torch.cat(self._values).squeeze(-1).numpy()
         vals   = np.append(values, last_val)
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
