@@ -27,11 +27,30 @@ Optimisations over baseline engine
    The engine now calls cluster.free_gpu_count() and similar helpers that are
    O(1) instead of O(total_GPUs), making the scheduling-guard check trivial.
 
-4. **__slots__ on Event** (Python 3.10+)
+4. **PendingJobQueue** (eliminates O(J log J) sort in every schedule() call)
+   _pending is now a PendingJobQueue (min-heap + lazy-deletion dict) instead
+   of a plain dict.
+
+   Key wins:
+     a. Engine passes the queue object directly to scheduler.schedule() —
+        no list() copy needed.
+     b. FIFO and Tiresias/MLFQ iterate via the queue's heap (O(K log J) with
+        early-exit) rather than calling sorted() on a fresh list every time.
+     c. Job removal from _pending (job starts running) is still O(1) via the
+        lazy-deletion dict inside PendingJobQueue.
+     d. Re-queuing a preempted job (with updated submit_time) is O(log J)
+        via repush(); the old heap entry becomes a ghost.
+
+   Backward-compatible interface: PendingJobQueue supports the same
+   __contains__, __len__, __bool__, __getitem__, __setitem__, __delitem__
+   operations that the old dict did, so internal engine code needed only
+   minimal changes.
+
+5. **__slots__ on Event** (Python 3.10+)
    Millions of Event objects are created/destroyed per simulation.  Adding
    __slots__ cuts per-object overhead by ~40 % and speeds GC.
 
-5. **Early-exit scheduling guard**
+6. **Early-exit scheduling guard**
    _do_schedule() is not called if _pending is empty (checked by the run-loop
    before dispatching). Also checks free GPU/MIG/CPU counts before calling the
    scheduler if all resource pools are empty and no CPU jobs are pending.
@@ -48,6 +67,7 @@ import math
 
 from ..cluster.cluster import Cluster
 from ..scheduler.schedulers import BaseScheduler, SchedulingDecision
+from ..scheduler.pending_queue import PendingJobQueue
 from ..workload.job import (
     AnyJob, TrainingJob, InferenceJob, LLMJob, HPOJob,
     JobStatus, SchedulingMode,
@@ -134,6 +154,20 @@ class SimulationEngine:
 
     This eliminates the O(jobs × sim_duration / tick) event flood of tick-based
     engines.
+
+    Pending-job data structure (_pending: PendingJobQueue)
+    ───────────────────────────────────────────────────────
+    Previously _pending was a plain dict[str, AnyJob].  It is now a
+    PendingJobQueue — a min-heap keyed by submit_time with lazy deletion.
+
+    The queue is passed *directly* to scheduler.schedule() (no list() copy).
+    Schedulers that iterate in FIFO order use PendingJobQueue.iter_fifo(),
+    which is a heap-snapshot generator: callers that stop iterating once the
+    cluster is full pay O(K log J) instead of O(J log J).
+
+    All existing dict-style accesses in this file (_pending[jid],
+    del _pending[jid], jid in _pending, if _pending) continue to work
+    unchanged via PendingJobQueue's backward-compatible mapping interface.
     """
 
     # Metric snapshots are still periodic (not state-triggered)
@@ -167,7 +201,8 @@ class SimulationEngine:
 
         self._event_seq  = 0
         self._heap:      list[Event] = []
-        self._pending:   dict[str, AnyJob] = {}
+        self._pending:   PendingJobQueue = PendingJobQueue()
+
         self._running:   dict[str, AnyJob] = {}
         self._completed: list[AnyJob]      = []
         self._job_gpus:  dict[str, list[str]] = {}
@@ -354,7 +389,10 @@ class SimulationEngine:
     def _on_arrival(self, event: Event) -> None:
         """
         Register a newly arrived job in _pending.
-        Does NOT push a SCHEDULE event — the run-loop batch handles that.
+
+        _pending[job.job_id] = job  calls PendingJobQueue.__setitem__  which
+        calls push(job) — heap insert in O(log J).  The job's submit_time is
+        used as the heap key so FIFO-ordered iteration is free.
         """
         job = self._workload_map.get(event.job_id)
         if job is None:
@@ -444,12 +482,16 @@ class SimulationEngine:
             self._flush_segment(other, current_time)
             self._schedule_completion(other, current_time)
 
-        # Job re-enters pending after checkpoint overhead
+        # Job re-enters pending after checkpoint overhead.
+        # submit_time is updated BEFORE repush so the new heap key is correct.
         ckpt = getattr(job, "checkpoint_overhead_sec", 30.0)
         job.submit_time = current_time + ckpt
         job.start_time  = None
         job.status      = JobStatus.PENDING
-        self._pending[job_id] = job
+
+        # repush() → lazy-delete any ghost + fresh O(log J) heap insert
+        # with the updated submit_time as the new heap key.
+        self._pending.repush(job)
         self.metrics.record_preemption(job)
 
     # ── Scheduler dispatch (single call per timestamp) ────────────────────────
@@ -458,15 +500,24 @@ class SimulationEngine:
         """
         Core scheduler dispatch — called AT MOST ONCE per simulation timestamp.
 
-        Builds the pending/running lists, asks the scheduler for a decision,
-        applies preemptions, then applies allocations.  No periodic self-push.
+        Key change from original engine
+        ────────────────────────────────
+        Instead of ``list(self._pending.values())`` (O(J) copy), the
+        PendingJobQueue is passed directly.  Schedulers iterate the queue's
+        internal heap via iter_fifo() — a generator that supports early-exit
+        and avoids a full ``sorted()`` call.
+
+        The running list is still materialised as a plain list because
+        running jobs are accessed randomly (by job_id) and need no ordering.
         """
-        pending_list = list(self._pending.values())
-        running_list = list(self._running.values())
-        if not pending_list:
+        if not self._pending:
             return
 
-        decision = self.scheduler.schedule(pending_list, running_list, current_time)
+        running_list = list(self._running.values())
+        # Pass the PendingJobQueue directly — no list() conversion needed.
+        # Schedulers call pending.iter_fifo() / pending.values() / pending.sorted_by()
+        # as appropriate for their algorithm.
+        decision = self.scheduler.schedule(self._pending, running_list, current_time)
 
         # Apply preemptions first (frees resources for new allocations)
         for job_id in decision.preemptions:
@@ -527,6 +578,7 @@ class SimulationEngine:
             if hasattr(job, "allocated_cpus"):
                 job.allocated_cpus = alloc.cpu_alloc
 
+        # Remove from pending: PendingJobQueue.remove() is O(1) lazy-delete
         del self._pending[jid]
         self._running[jid] = job
         self._job_segment_start[jid] = current_time
@@ -581,6 +633,12 @@ class SimulationEngine:
         Original (periodic, 5 s interval, 24 h sim): ~17,280 scheduler calls.
         New (trigger-based):  ≈ num_arrivals + num_completions + num_preemptions.
         Typical reduction: 10×–100× fewer scheduler calls.
+
+        PendingJobQueue pass-through
+        ────────────────────────────
+        The PendingJobQueue is passed directly to scheduler.schedule() in
+        _do_schedule(), avoiding the O(J) list() copy that the original engine
+        performed on every scheduling event.
         """
         # ── Seed events ───────────────────────────────────────────────────────
         for job in sorted(self.workload, key=lambda j: j.submit_time):
@@ -633,6 +691,8 @@ class SimulationEngine:
                     break
 
             # ── Step 4: single scheduler invocation per timestamp batch ───────
+            # _do_schedule() itself checks `if not self._pending: return`
+            # so the bool guard here is just a cheap outer gate.
             if schedule_needed and self._pending:
                 self._do_schedule(batch_time)
 

@@ -14,12 +14,34 @@ Implemented algorithms (12 total):
 10. ElasticFlow      — Serverless elastic [Gu et al., ASPLOS'23]
 11. MaxMinFairness   — Dominant Resource Fairness [Ghodsi et al., NSDI'11]
 12. Backfill         — Conservative backfill EASY (HPC standard)
+
+Performance optimisations (this revision)
+──────────────────────────────────────────
+1. PendingJobQueue integration
+   The engine now passes a ``PendingJobQueue`` object instead of a plain list.
+   Schedulers that iterate in submit-time order (FIFO, Tiresias, MLFQ, …) use
+   ``_iter_fifo(pending)`` which directly drains a heap snapshot — no call to
+   ``sorted()`` is needed.
+
+2. MultiLevelQueue for MLFQ and Tiresias
+   Both schedulers maintain a ``MultiLevelQueue`` as instance state.
+   ``sync(pending_list)`` reconciles it with the engine's snapshot in O(J)
+   (vs O(J log J) for a full re-sort), then ``iter_by_priority()`` yields
+   jobs in the correct order in O(K log J), where K = jobs scheduled.
+
+3. Early-exit via ``_all_resources_exhausted()``
+   Every scheduler checks ``_all_resources_exhausted()`` (O(1)) before
+   attempting the next allocation.  When the cluster is full, the loop
+   breaks immediately, saving O((J-K) log J) work where J-K is the number
+   of pending jobs that would have been tested in vain.
+   Combined with PendingJobQueue's generator-based iter_fifo(), callers
+   that stop early pay only O(K log J) instead of O(J log J).
 """
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING
+from typing import Iterator, Optional, TYPE_CHECKING
 import math
 
 if TYPE_CHECKING:
@@ -32,6 +54,7 @@ from ..workload.job import (
     goodput, solo_throughput, MODEL_PROFILES,
 )
 from ..cluster.hardware import CPUType, MIGProfile
+from .pending_queue import PendingJobQueue, MultiLevelQueue
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,12 +122,62 @@ class BaseScheduler(ABC):
 
     Subclasses implement schedule() which returns a SchedulingDecision.
     Helper methods handle GPU, MIG, and CPU resource discovery.
+
+    Performance helpers (new)
+    ─────────────────────────
+    _iter_fifo(pending)
+        Yield pending jobs in ascending submit_time order.
+        Uses PendingJobQueue.iter_fifo() when available (avoids sorted()),
+        falls back to sorted() for plain-list callers (tests, RL wrappers).
+
+    _all_resources_exhausted()
+        O(1) check: True when GPU + MIG + CPU pools are all empty.
+        Use as an early-exit guard inside schedule() loops.
     """
 
     name: str = "base"
 
     def __init__(self, cluster: "Cluster"):
         self.cluster = cluster
+
+    # ── Performance helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _iter_fifo(
+        pending: PendingJobQueue | list[AnyJob],
+    ) -> Iterator[AnyJob]:
+        """
+        Yield pending jobs in ascending submit_time order.
+
+        If *pending* is a ``PendingJobQueue``, uses the pre-built heap
+        snapshot (no call to ``sorted()``).
+        Falls back to ``sorted()`` for plain lists (backward compat).
+        The returned iterator is a generator — callers can break early
+        to exploit O(K log J) amortised cost (K = jobs actually yielded).
+        """
+        if isinstance(pending, PendingJobQueue):
+            yield from pending.iter_fifo()
+        else:
+            yield from sorted(pending, key=lambda j: j.submit_time)
+
+    def _all_resources_exhausted(self) -> bool:
+        """
+        O(1) early-exit guard.
+
+        Returns True when **every** resource pool is at zero capacity:
+          • No free physical GPUs
+          • No free MIG slices (or cluster has no MIG at all)
+          • No free CPU cores (or cluster has no CPU-schedulable nodes)
+
+        When this returns True, no pending job of any resource type can
+        start, so the scheduling loop can ``break`` immediately.
+        """
+        c = self.cluster
+        return (
+            c.free_gpu_count() == 0
+            and (not c.has_mig()       or c.free_mig_slices()  == 0)
+            and (not c.has_cpu_nodes() or c.free_cpu_cores()    == 0)
+        )
 
     # ── GPU helpers ───────────────────────────────────────────────────────────
 
@@ -187,7 +260,7 @@ class BaseScheduler(ABC):
     @abstractmethod
     def schedule(
         self,
-        pending: list[AnyJob],
+        pending: PendingJobQueue | list[AnyJob],
         running: list[AnyJob],
         current_time: float,
     ) -> SchedulingDecision:
@@ -207,13 +280,30 @@ def register(cls: type) -> type:
 
 @register
 class FIFOScheduler(BaseScheduler):
-    """First In First Out — baseline for JCT comparisons."""
+    """
+    First In First Out — baseline for JCT comparisons.
+
+    Optimisation (this revision)
+    ────────────────────────────
+    Uses _iter_fifo() which drains the PendingJobQueue heap snapshot in
+    submit_time order — no call to sorted().
+    The early-exit on _all_resources_exhausted() stops the loop as soon as
+    the cluster is full, reducing the amortised cost to O(K log J) where K
+    is the number of jobs successfully scheduled (K << J when the cluster
+    is near-capacity).
+    """
     name = "fifo"
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        ordered = sorted(pending, key=lambda j: j.submit_time)
-        for job in ordered:
+        for job in self._iter_fifo(pending):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -243,10 +333,17 @@ class SJFScheduler(BaseScheduler):
             return job.remaining_iterations() / max(tp, 1e-9)
         return getattr(job, "total_queries", 1000)
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        ordered = sorted(pending, key=self._est_duration)
-        for job in ordered:
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        for job in sorted(jobs, key=self._est_duration):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -261,35 +358,58 @@ class SJFScheduler(BaseScheduler):
 # MLFQ thresholds in GPU-seconds (Tiresias paper Table 3)
 _TIRESIAS_THRESHOLDS = [60, 180, 600, 1800, float("inf")]
 
+
 @register
 class TiresiasLASScheduler(BaseScheduler):
     """
     Least Attained Service (LAS) via MLFQ discretization.
     Tiresias [Gu et al., NSDI'19]: prioritize jobs with less GPU-seconds.
+
+    Optimisation (this revision)
+    ────────────────────────────
+    Maintains a ``MultiLevelQueue`` (self._mlq) as instance state.
+    On each schedule() call, sync() reconciles the MLQ with the engine
+    snapshot in O(J), then iter_by_priority() yields in level order without
+    a full sort.  Jobs whose attained_service crossed a threshold are
+    automatically re-classified to the correct level during sync().
+
+    Complexity: O(J) sync + O(K log J) iteration (K = jobs scheduled).
+    Previous: O(J log J) sorted() every call.
     """
     name = "tiresias"
 
-    def _queue_level(self, attained: float) -> int:
-        for i, thr in enumerate(_TIRESIAS_THRESHOLDS):
-            if attained <= thr:
-                return i
-        return len(_TIRESIAS_THRESHOLDS) - 1
+    # Tiresias thresholds (GPU-seconds); last entry is a sentinel
+    _LAS_THRESHOLDS: list[float] = [60, 180, 600, 1800]
 
-    def schedule(self, pending, running, current_time):
+    def __init__(self, cluster: "Cluster") -> None:
+        super().__init__(cluster)
+        # attained_service (GPU-seconds) is the service metric
+        self._mlq: MultiLevelQueue = MultiLevelQueue(
+            thresholds=self._LAS_THRESHOLDS,
+            service_fn=lambda j: getattr(j, "attained_service", 0.0),
+        )
+
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        for job in pending:
-            svc = getattr(job, "attained_service", 0.0)
-            job._las_level = self._queue_level(svc)
 
-        ordered = sorted(pending, key=lambda j: (
-            getattr(j, "_las_level", 0),
-            j.submit_time,
-        ))
-        for job in ordered:
+        # Sync multi-level queue with current engine snapshot — O(J)
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        self._mlq.sync(jobs)
+
+        # Iterate in priority order with early-exit — O(K log J)
+        for job in self._mlq.iter_by_priority():
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
                 decision.add(job, gpus, migs, cpus)
+
         return decision
 
 
@@ -313,9 +433,17 @@ class ELASScheduler(BaseScheduler):
         )
         return remaining / attained
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        for job in sorted(pending, key=self._urgency, reverse=True):
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        for job in sorted(jobs, key=self._urgency, reverse=True):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -331,28 +459,51 @@ class ELASScheduler(BaseScheduler):
 class MLFQScheduler(BaseScheduler):
     """
     Multi-Level Feedback Queue — standard HPC job scheduler.
-    Priority decays with accumulated runtime.
+    Priority decays with accumulated runtime (accumulated_work in seconds).
+
+    Optimisation (this revision)
+    ────────────────────────────
+    Same MultiLevelQueue approach as Tiresias, but keyed by
+    ``accumulated_work`` (wall-clock seconds used) rather than
+    ``attained_service`` (GPU-seconds).
+
+    Complexity: O(J) sync + O(K log J) iteration.
+    Previous: O(J log J) sorted() every call.
     """
     name = "mlfq"
 
     LEVELS = 4
-    QUANTA = [300, 900, 2700, float("inf")]  # seconds
+    QUANTA = [300, 900, 2700, float("inf")]  # seconds of accumulated work
 
-    def _level(self, job: AnyJob) -> int:
-        svc = getattr(job, "accumulated_work", 0.0)
-        for i, q in enumerate(self.QUANTA):
-            if svc <= q:
-                return i
-        return self.LEVELS - 1
+    def __init__(self, cluster: "Cluster") -> None:
+        super().__init__(cluster)
+        # Use accumulated_work (wall-clock CPU/GPU time) as service metric
+        self._mlq: MultiLevelQueue = MultiLevelQueue(
+            thresholds=self.QUANTA[:-1],   # drop the sentinel ∞
+            service_fn=lambda j: getattr(j, "accumulated_work", 0.0),
+        )
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        ordered = sorted(pending, key=lambda j: (self._level(j), j.submit_time))
-        for job in ordered:
+
+        # Sync multi-level queue — O(J)
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        self._mlq.sync(jobs)
+
+        # Iterate level-0 first (least accumulated work), FIFO within level
+        for job in self._mlq.iter_by_priority():
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
                 decision.add(job, gpus, migs, cpus)
+
         return decision
 
 
@@ -385,11 +536,17 @@ class GavelScheduler(BaseScheduler):
                 best_tp, best_type = tp, gtype
         return best_type
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
         # Sort by Gavel priority: normalised throughput deficit
         ordered = sorted(
-            pending,
+            jobs,
             key=lambda j: -solo_throughput(
                 getattr(j, "arch", ModelArch.RESNET50),
                 GPUType.V100,
@@ -397,6 +554,8 @@ class GavelScheduler(BaseScheduler):
             )
         )
         for job in ordered:
+            if self._all_resources_exhausted():
+                break
             best_type = self._best_gpu_type(job)
             gpu_ids = self._find_gpus(job, gpu_type=best_type)
             if gpu_ids:
@@ -446,19 +605,29 @@ class PolluxScheduler(BaseScheduler):
                 best_gp, best_k, best_ids = gp, k, gpu_ids
         return best_k, best_ids
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        elastic = [j for j in pending if getattr(j, "scheduling_mode", None) == SchedulingMode.ELASTIC]
-        rest    = [j for j in pending if j not in elastic]
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        elastic = [j for j in jobs if getattr(j, "scheduling_mode", None) == SchedulingMode.ELASTIC]
+        rest    = [j for j in jobs if j not in elastic]
 
         # Pollux elastic jobs get priority with optimal k
         for job in sorted(elastic, key=lambda j: j.submit_time):
+            if self._all_resources_exhausted():
+                break
             _, gpu_ids = self._best_k_and_gpus(job)
             if gpu_ids:
                 decision.add(job, gpu_ids, [], [])
 
         # Remaining: FIFO
         for job in sorted(rest, key=lambda j: j.submit_time):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -488,7 +657,12 @@ class ThemisScheduler(BaseScheduler):
             remaining = getattr(job, "total_queries", 1000)
         return (remaining / max(tp, 1e-9)) + current_time
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
 
         # Group by user; compute ρ ratio: (elapsed) / solo_time
@@ -503,7 +677,10 @@ class ThemisScheduler(BaseScheduler):
         def key(job: AnyJob) -> float:
             return user_rho.get(job.user_id, 0.0)
 
-        for job in sorted(pending, key=key):
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        for job in sorted(jobs, key=key):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -537,13 +714,21 @@ class ChronusScheduler(BaseScheduler):
             est = 0.0
         return deadline - current_time - est
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        slo_jobs = [j for j in pending if getattr(j, "deadline", None) is not None]
-        be_jobs  = [j for j in pending if getattr(j, "deadline", None) is None]
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        slo_jobs = [j for j in jobs if getattr(j, "deadline", None) is not None]
+        be_jobs  = [j for j in jobs if getattr(j, "deadline", None) is None]
 
         # SLO: tightest slack first (Earliest Deadline First variant)
         for job in sorted(slo_jobs, key=lambda j: self._slack(j, current_time)):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -551,6 +736,8 @@ class ChronusScheduler(BaseScheduler):
 
         # BE: FIFO on remaining capacity
         for job in sorted(be_jobs, key=lambda j: j.submit_time):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -594,16 +781,25 @@ class ElasticFlowScheduler(BaseScheduler):
                 return k
         return getattr(job, "min_gpus", 1)
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
-        ordered = sorted(pending, key=lambda j: (
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
+        ordered = sorted(jobs, key=lambda j: (
             getattr(j, "deadline", float("inf")),
             j.submit_time,
         ))
         for job in ordered:
+            if self._all_resources_exhausted():
+                break
             min_k = self._min_gpus_for_deadline(job, current_time)
             old_req = getattr(job, "num_gpus_requested", min_k)
-            object.__setattr__(job, "num_gpus_requested", max(min_k, old_req)) if hasattr(job, "__dataclass_fields__") else None
+            object.__setattr__(job, "num_gpus_requested", max(min_k, old_req)) \
+                if hasattr(job, "__dataclass_fields__") else None
             try:
                 job.num_gpus_requested = max(min_k, old_req)
             except AttributeError:
@@ -644,13 +840,21 @@ class MaxMinFairnessScheduler(BaseScheduler):
         )
         return used / total_gpus
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         decision = SchedulingDecision()
+        jobs = pending.values() if isinstance(pending, PendingJobQueue) else list(pending)
         # Give priority to user with least dominant share
-        for job in sorted(pending, key=lambda j: (
+        for job in sorted(jobs, key=lambda j: (
             self._dominant_share(j.user_id, running),
             j.submit_time,
         )):
+            if self._all_resources_exhausted():
+                break
             res = self._find_resources(job)
             if res:
                 gpus, migs, cpus = res
@@ -676,7 +880,12 @@ class BackfillScheduler(BaseScheduler):
     """
     name = "backfill"
 
-    def schedule(self, pending, running, current_time):
+    def schedule(
+        self,
+        pending: PendingJobQueue | list[AnyJob],
+        running: list[AnyJob],
+        current_time: float,
+    ) -> SchedulingDecision:
         import warnings
         warnings.warn(
             "BackfillScheduler is deprecated. "
@@ -686,16 +895,27 @@ class BackfillScheduler(BaseScheduler):
         decision = SchedulingDecision()
         if not pending:
             return decision
-        ordered = sorted(pending, key=lambda j: j.submit_time)
-        # Head job
-        head = ordered[0]
+
+        # Head job (first in FIFO order)
+        head: Optional[AnyJob] = None
+        for job in self._iter_fifo(pending):
+            head = job
+            break
+        if head is None:
+            return decision
+
         head_res = self._find_resources(head)
         if head_res:
             gpus, migs, cpus = head_res
             decision.add(head, gpus, migs, cpus)
-        # Simple EASY fill: smaller jobs that fit
+
+        # Simple EASY fill: smaller jobs that fit within remaining capacity
         free_gpus = self.cluster.free_gpu_count()
-        for job in ordered[1:]:
+        for job in self._iter_fifo(pending):
+            if job.job_id == head.job_id:
+                continue
+            if self._all_resources_exhausted():
+                break
             n_req = getattr(job, "num_gpus_requested", 1)
             if n_req > free_gpus:
                 continue
@@ -704,34 +924,6 @@ class BackfillScheduler(BaseScheduler):
                 gpus, migs, cpus = res
                 decision.add(job, gpus, migs, cpus)
                 free_gpus -= n_req
-        return decision
-
-
-
-        ordered = sorted(pending, key=lambda j: j.submit_time)
-
-        # Try to schedule head-of-queue job
-        head = ordered[0]
-        head_res = self._find_resources(head)
-        if head_res:
-            _hg, _hm, _hc = head_res
-            decision.add(head, _hg, _hm, _hc)
-            head_gpus = _hg  # for backfill window calc
-            ordered = ordered[1:]
-
-        # Backfill: schedule smaller jobs that fit without delaying head
-        for job in ordered:
-            if job is head:
-                continue
-            n_req = getattr(job, "num_gpus_requested", 1)
-            # heuristic: only backfill if job needs <= half head's GPUs
-            head_req = getattr(head, "num_gpus_requested", 1)
-            if n_req > head_req:
-                continue
-            res = self._find_resources(job)
-            if res:
-                gpus, migs, cpus = res
-                decision.add(job, gpus, migs, cpus)
         return decision
 
 
