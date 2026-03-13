@@ -15,7 +15,7 @@ from typing import Optional
 import statistics
 
 
-# ─── ClusterSnapshot ──────────────────────────────────────────────────────────
+# ClusterSnapshot 
 
 @dataclass
 class ClusterSnapshot:
@@ -32,7 +32,7 @@ class ClusterSnapshot:
     free_cpu_cores:         int   = 0
 
 
-# ─── MetricsCollector ─────────────────────────────────────────────────────────
+# MetricsCollector 
 
 @dataclass
 class MetricsCollector:
@@ -42,7 +42,7 @@ class MetricsCollector:
     preemption_count: int   = 0
     slo_violations:   int   = 0
 
-    # ── Recording hooks ───────────────────────────────────────────────────────
+    # Recording hooks 
 
     def record_job_start(self, job, current_time: float):
         self.job_starts[job.job_id] = current_time
@@ -101,7 +101,7 @@ class MetricsCollector:
     def finalise(self, end_time: float, completed_jobs: list):
         pass
 
-    # ── JCT statistics ────────────────────────────────────────────────────────
+    # JCT statistics 
 
     def jct_stats(self) -> dict:
         jcts = sorted(e["jct"] for e in self.job_events if e["jct"] < float("inf"))
@@ -130,7 +130,7 @@ class MetricsCollector:
             "p99":    qts[min(int(0.99 * n), n - 1)],
         }
 
-    # ── GPU utilization ───────────────────────────────────────────────────────
+    # GPU utilization 
 
     def avg_gpu_utilization(self) -> float:
         if not self.snapshots:
@@ -141,7 +141,7 @@ class MetricsCollector:
         return ([s.time for s in self.snapshots],
                 [s.utilization for s in self.snapshots])
 
-    # ── CPU utilization ───────────────────────────────────────────────────────
+    # CPU utilization 
 
     def avg_cpu_utilization(self) -> float:
         if not self.snapshots:
@@ -149,13 +149,13 @@ class MetricsCollector:
         vals = [s.cpu_utilization for s in self.snapshots]
         return statistics.mean(vals)
 
-    # ── BSLD ─────────────────────────────────────────────────────────────────
+    # BSLD 
 
     def avg_bsld(self) -> float:
         bslds = [e["bsld"] for e in self.job_events if e.get("bsld") is not None]
         return statistics.mean(bslds) if bslds else 0.0
 
-    # ── Renewable energy ──────────────────────────────────────────────────────
+    # Renewable energy 
 
     def renewable_energy_utilization(self) -> float:
         if len(self.snapshots) < 2:
@@ -208,7 +208,7 @@ class MetricsCollector:
             energy_ws += avg_pw * dt
         return energy_ws / 3_600_000.0
 
-    # ── Fairness ─────────────────────────────────────────────────────────────
+    # Fairness 
 
     def jains_fairness_index(self) -> float:
         user_jcts: dict[str, list] = {}
@@ -222,7 +222,7 @@ class MetricsCollector:
         s1, s2 = sum(means), sum(m * m for m in means)
         return (s1 * s1) / (n * s2) if s2 > 0 else 1.0
 
-    # ── Deadline + SLO ────────────────────────────────────────────────────────
+    # Deadline + SLO 
 
     def deadline_miss_rate(self) -> float:
         with_dl = [e for e in self.job_events if e["deadline"] is not None]
@@ -234,7 +234,7 @@ class MetricsCollector:
         total_q = sum(e.get("total_queries", 0) for e in self.job_events)
         return self.slo_violations / max(total_q, 1)
 
-    # ── Job type breakdown ────────────────────────────────────────────────────
+    # Job type breakdown 
 
     def cpu_jobs_completed(self) -> int:
         return sum(1 for e in self.job_events if e.get("resource_type") == "cpu")
@@ -245,7 +245,7 @@ class MetricsCollector:
     def hybrid_jobs_completed(self) -> int:
         return sum(1 for e in self.job_events if e.get("resource_type") == "cpu_gpu")
 
-    # ── Summary ──────────────────────────────────────────────────────────────
+    # Summary 
 
     def summary(self) -> dict:
         jct = self.jct_stats()

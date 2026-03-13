@@ -290,13 +290,13 @@ uv run hpcsim plot --type benchmark      --input bench.csv --output bench_plot.p
 ```python
 import sys; sys.path.insert(0, "src")
 
-# ── Cluster ──────────────────────────────────────────────────────────────────
+# Cluster 
 from hpcsim.cluster.cluster import Cluster, CLUSTER_CONFIGS
 cluster = Cluster(CLUSTER_CONFIGS["hpc_realistic"])
 print(cluster.describe())
 # → GPUs=128, CPU cores=1984, 28 nodes
 
-# ── Workload ─────────────────────────────────────────────────────────────────
+# Workload 
 from hpcsim.workload.generator import WorkloadGenerator, WorkloadConfig
 from hpcsim.workload.job import CPUJob, MIGJob, HybridJob, ResourceType
 
@@ -304,7 +304,7 @@ jobs = WorkloadGenerator(WorkloadConfig(duration=3600, rng_seed=42)).generate()
 print(f"Generated {len(jobs)} jobs")
 # Mix mặc định: ~62% GPU, 8% CPU, 3% MIG, 2% Hybrid, ...
 
-# ── Simulation ───────────────────────────────────────────────────────────────
+# Simulation 
 from hpcsim.simulator.engine import SimulationEngine
 from hpcsim.scheduler.schedulers import SCHEDULER_REGISTRY
 from hpcsim.energy.renewable import RenewableEnergyModule
@@ -317,7 +317,7 @@ print(summary)
 # avg_jct_s, avg_bsld, avg_gpu_util, avg_cpu_util,
 # renewable_energy_utilization, total_energy_kwh, ...
 
-# ── RL Environment ───────────────────────────────────────────────────────────
+# RL Environment 
 from hpcsim.rl.env import HPCGreenEnv, EnvConfig
 import numpy as np
 
@@ -432,14 +432,14 @@ sched = wrap_with_backfill(create_scheduler("fifo", cluster), "easy")
 
 ```
 ┌────────────────────────────────────────────────┐
-│           Primary Scheduler                     │
-│  FIFO / SJF / Gavel / GAS-MARL / PPO / ...    │
-│  → selects job + optional delay action          │
+│           Primary Scheduler                    │
+│  FIFO / SJF / Gavel / GAS-MARL / PPO / ...     │
+│  → selects job + optional delay action         │
 └───────────────────┬────────────────────────────┘
                     │  blocked or delayed
                     ▼
 ┌────────────────────────────────────────────────┐
-│           BackfillPolicy                        │
+│           BackfillPolicy                       │
 │  EASY  → submit-time order, window constraint  │
 │  Green → L_j priority, brown-energy filter     │
 └────────────────────────────────────────────────┘

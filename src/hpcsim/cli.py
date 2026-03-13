@@ -43,7 +43,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Optional
 
-# ─── Color helpers ────────────────────────────────────────────────────────────
+# Color helpers 
 BOLD   = "\033[1m"
 GREEN  = "\033[32m"
 CYAN   = "\033[36m"
@@ -84,7 +84,7 @@ def _build_scheduler(sched_name: str, cluster, backfill: str = "none",
 def _warn(msg): print(f"  {_c('⚠', YELLOW)} {msg}")
 def _err(msg):  print(f"  {_c('✗', RED)} {msg}", file=sys.stderr)
 
-# ─── Shared helpers ───────────────────────────────────────────────────────────
+# Shared helpers 
 
 def _load_cluster_and_jobs(cluster_name, duration,
                             arrival_rate=None, gpu_dist=None,
@@ -191,7 +191,7 @@ def _print_metrics(summary: dict, title: str = "Results"):
     _header(title)
 
     sections = [
-        ("── Job Completion ──", [
+        (" Job Completion ", [
             ["Jobs completed",  summary.get("jobs_completed", 0)],
             ["Avg JCT",         f"{summary.get('avg_jct_s', 0):.1f} s"],
             ["Median JCT",      f"{summary.get('median_jct_s', 0):.1f} s"],
@@ -199,13 +199,13 @@ def _print_metrics(summary: dict, title: str = "Results"):
             ["Avg queue time",  f"{summary.get('avg_queue_s', 0):.1f} s"],
             ["Avg BSLD",        f"{summary.get('avg_bsld', 0):.4f}"],
         ]),
-        ("── Utilization & Fairness ──", [
+        (" Utilization & Fairness ", [
             ["GPU utilization",   f"{summary.get('avg_gpu_util', 0):.1%}"],
             ["Jain's fairness",   f"{summary.get('jains_fairness', 0):.4f}"],
             ["Deadline miss",     f"{summary.get('deadline_miss_pct', 0):.1f}%"],
             ["Preemptions",       summary.get("preemptions", 0)],
         ]),
-        ("── Energy ──", [
+        (" Energy ", [
             ["ReUtil",            f"{summary.get('renewable_energy_utilization', 0):.1%}"],
             ["Total energy",      f"{summary.get('total_energy_kwh', 0):.3f} kWh"],
             ["Renewable energy",  f"{summary.get('renewable_energy_wh', 0):.0f} Wh"],
@@ -231,18 +231,18 @@ def _add_common(p, cluster=True, duration=True, seed=True):
                        help="Random seed (default: 42)")
 
 
-# ─── Command implementations ──────────────────────────────────────────────────
+# Command implementations 
 
 def cmd_info(args):
     import platform
     _header("HPCSim System Info")
 
-    print(f"\n  {_c('── System ──', CYAN)}")
+    print(f"\n  {_c(' System ', CYAN)}")
     print(f"  Python      : {sys.version.split()[0]}")
     print(f"  Platform    : {platform.platform()}")
     print(f"  HPCSim dir  : {Path(__file__).parent}")
 
-    print(f"\n  {_c('── Core packages ──', CYAN)}")
+    print(f"\n  {_c(' Core packages ', CYAN)}")
     for pkg in ["numpy", "pandas", "scipy", "matplotlib", "tabulate", "seaborn"]:
         try:
             v = __import__(pkg).__version__
@@ -250,7 +250,7 @@ def cmd_info(args):
         except ImportError:
             _warn(f"{pkg:<18} NOT installed")
 
-    print(f"\n  {_c('── RL packages ──', CYAN)}")
+    print(f"\n  {_c(' RL packages ', CYAN)}")
     try:
         import torch
         cuda = (f"  CUDA {torch.version.cuda}  ·  {torch.cuda.get_device_name(0)}"
@@ -259,13 +259,13 @@ def cmd_info(args):
     except ImportError:
         _warn("torch              NOT installed  →  run: uv sync --extra rl")
 
-    print(f"\n  {_c('── Schedulers ──', CYAN)}")
+    print(f"\n  {_c(' Schedulers ', CYAN)}")
     from .scheduler.schedulers import list_schedulers
     scheds = list_schedulers()
     for i in range(0, len(scheds), 3):
         print("  " + "  ".join(f"{s:<22}" for s in scheds[i:i+3]))
 
-    print(f"\n  {_c('── Clusters ──', CYAN)}")
+    print(f"\n  {_c(' Clusters ', CYAN)}")
     from .cluster.cluster import CLUSTER_CONFIGS
     for name, cfg in CLUSTER_CONFIGS.items():
         total = sum(n.gpu_count for n in cfg.nodes)
@@ -431,7 +431,7 @@ def cmd_test(args):
 
         run_test("RL environment (HPCGreenEnv)", t_rl_env)
 
-    print(f"\n  {'─'*40}")
+    print(f"\n  {''*40}")
     if failed == 0:
         print(f"  {_c(f'All {passed} tests passed ✓', GREEN)}")
     else:
@@ -518,7 +518,7 @@ def _plot_simulation(metrics, path: str, title: str = ""):
         fig, axes = plt.subplots(2, 1, figsize=(12, 6))
         fig.suptitle(title, fontsize=13, fontweight="bold")
 
-        # ── GPU Utilization ─────────────────────────────────────────────────
+        # GPU Utilization 
         axes[0].fill_between(times, utils, alpha=0.6, color="#2196F3", label="GPU Util")
         axes[0].set_ylabel("GPU Utilization")
         axes[0].set_ylim(0, 1)
@@ -528,7 +528,7 @@ def _plot_simulation(metrics, path: str, title: str = ""):
         axes[0].legend(fontsize=9)
         axes[0].grid(True, alpha=0.3)
 
-        # ── Power / Energy ───────────────────────────────────────────────────
+        # Power / Energy 
         axes[1].fill_between(snap_times, snap_green, alpha=0.5,
                              color="#4CAF50", label="Renewable (W)")
         axes[1].fill_between(snap_times, snap_power, alpha=0.3,
@@ -883,7 +883,7 @@ def cmd_plot(args):
     print()
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# Main 
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1093,7 +1093,7 @@ def main():
     p_plot.add_argument("--input",  "-i", required=True, metavar="FILE")
     p_plot.add_argument("--output", "-o", default=None,  metavar="FILE")
 
-    # ── Dispatch ──────────────────────────────────────────────────────────────
+    # Dispatch 
     args = parser.parse_args()
 
     commands = {

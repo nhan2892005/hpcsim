@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 import os
 
-# ── Lazy imports to avoid torch dependency at import time ─────────────────────
+# Lazy imports to avoid torch dependency at import time 
 
 def _import_torch_deps():
     from .env import HPCGreenEnv, EnvConfig
@@ -34,7 +34,7 @@ def _import_torch_deps():
     return HPCGreenEnv, EnvConfig, MaskablePPOAgent, train_maskable_ppo, GASMARLAgent, train_gas_marl
 
 
-# ─── Training ─────────────────────────────────────────────────────────────────
+# Training 
 
 def run_training(
     algo: str = "all",
@@ -180,7 +180,7 @@ def run_training(
     return trained
 
 
-# ─── Evaluation ───────────────────────────────────────────────────────────────
+# Evaluation 
 
 def run_evaluation(
     model_dir: str,
@@ -308,7 +308,7 @@ def run_evaluation(
     return results
 
 
-# ─── Full Comparison (RL + Classical) ────────────────────────────────────────
+# Full Comparison (RL + Classical) 
 
 def run_comparison(
     model_dir: Optional[str] = None,
@@ -415,7 +415,7 @@ def _print_green_summary(results, verbose: bool):
     print()
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
+# CLI 
 
 def main():
     parser = argparse.ArgumentParser(
@@ -424,7 +424,7 @@ def main():
     )
     sub = parser.add_subparsers(dest="mode", help="Mode: train | eval | compare")
 
-    # ── train ──
+    # train 
     p_train = sub.add_parser("train", help="Train RL scheduler")
     p_train.add_argument("--algo",    default="all",
                          choices=["maskable_ppo", "gas_marl", "all"])
@@ -450,7 +450,7 @@ def main():
     p_train.add_argument("--no-save-best", action="store_false", dest="save_best",
                          help="Disable saving best-reward model")
 
-    # ── eval ──
+    # eval 
     p_eval = sub.add_parser("eval", help="Evaluate trained model")
     p_eval.add_argument("--model-dir", default="models")
     p_eval.add_argument("--algo",      default="all",
@@ -460,7 +460,7 @@ def main():
     p_eval.add_argument("--duration",  type=float, default=86400.0)
     p_eval.add_argument("--output-csv",default=None)
 
-    # ── compare ──
+    # compare 
     p_cmp = sub.add_parser("compare", help="Compare RL vs classical schedulers")
     p_cmp.add_argument("--model-dir",   default="models")
     p_cmp.add_argument("--classical",   default="fifo,tiresias,gavel,pollux,chronus",

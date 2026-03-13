@@ -53,7 +53,7 @@ from ..cluster.cluster import Cluster, CLUSTER_CONFIGS, NodeSpec
 from ..cluster.hardware import MIGProfile, MIG_PROFILE_SPECS, NodeType
 
 
-# ─── Constants ────────────────────────────────────────────────────────────────
+# Constants 
 
 MAX_QUEUE_SIZE  = 64       # waiting queue window
 RUN_WIN         = 32       # running jobs window
@@ -188,7 +188,7 @@ class HPCGreenEnv:
         info = MIG_PROFILE_SPECS.get(spec.mig_profile, {})
         return info.get("max_per_gpu", 0) * spec.gpus_per_node * spec.num_nodes
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # Public API 
 
     def seed(self, s: int):
         self.rng = random.Random(s)
@@ -251,7 +251,7 @@ class HPCGreenEnv:
             job_action = 0
         job = visible[job_action]
 
-        # ── Delay handling (GAS-MARL) ─────────────────────────────────────────
+        # Delay handling (GAS-MARL) 
         release_time = self._current_time
         if delay_action > 0:
             if delay_action <= DELAY_MAX_JOB_NUM:
@@ -300,7 +300,7 @@ class HPCGreenEnv:
         return (self._get_obs(), reward, done, bsld_r, 0.0, 0.0,
                 len(self._running), green_r)
 
-    # ── Action Masks ───────────────────────────────────────────────────────────
+    # Action Masks 
 
     def action_mask1(self) -> np.ndarray:
         """
@@ -326,7 +326,7 @@ class HPCGreenEnv:
                 mask[i] = 1.0
         return mask
 
-    # ── Observation ────────────────────────────────────────────────────────────
+    # Observation 
 
     def _get_obs(self) -> np.ndarray:
         """
@@ -336,7 +336,7 @@ class HPCGreenEnv:
         total_rows = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN + CLUSTER_WIN
         obs = np.zeros((total_rows, JOB_FEATURES), dtype=np.float32)
 
-        # ── Queue slots ───────────────────────────────────────────────────────
+        # Queue slots 
         visible = self._pending[:MAX_QUEUE_SIZE]
         for i, job in enumerate(visible):
             obs[i] = self._job_features(job)
@@ -344,7 +344,7 @@ class HPCGreenEnv:
         for i in range(len(visible), MAX_QUEUE_SIZE):
             obs[i] = np.ones(JOB_FEATURES, dtype=np.float32)
 
-        # ── Running slots ──────────────────────────────────────────────────────
+        # Running slots 
         sorted_running = sorted(self._running, key=lambda r: r.finish_time)
         for i, rj in enumerate(sorted_running[:RUN_WIN]):
             row = MAX_QUEUE_SIZE + i
@@ -359,7 +359,7 @@ class HPCGreenEnv:
             obs[row, 6] = min(rj.num_mig / max(MAX_MIGS, 1), 1.0)
             # rows 7-11 = 0 (padding)
 
-        # ── Green forecast ─────────────────────────────────────────────────────
+        # Green forecast 
         forecast = self._re.get_forecast(self._current_time)
         for i, (rem_dur, pow_w) in enumerate(forecast[:GREEN_WIN]):
             row = MAX_QUEUE_SIZE + RUN_WIN + i
@@ -367,7 +367,7 @@ class HPCGreenEnv:
             obs[row, 1] = min(pow_w / MAX_POWER_W, 1.0)
             # rows 2-11 = 0
 
-        # ── Cluster state (1 row) ──────────────────────────────────────────────
+        # Cluster state (1 row) 
         row = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN
         running_power  = sum(r.power_w for r in self._running)
         re_avail       = self._re.available_power_watts(self._current_time)
@@ -424,7 +424,7 @@ class HPCGreenEnv:
             cpu_schedulable,                           # 11
         ], dtype=np.float32)
 
-    # ── Resource helpers ───────────────────────────────────────────────────────
+    # Resource helpers 
 
     def _resources_for_job(
         self, job: AnyJob
@@ -488,7 +488,7 @@ class HPCGreenEnv:
         mig_power = n_mig * 80.0   # ~200W / (400W/GPU × 1/7 × correction)
         return max(gpu_power + cpu_power + mig_power, 1.0)
 
-    # ── Simulation core ────────────────────────────────────────────────────────
+    # Simulation core 
 
     def _start_job(self, job: AnyJob, t: float):
         n_gpu, n_cpu, n_mig, rt = self._resources_for_job(job)
@@ -588,7 +588,7 @@ class HPCGreenEnv:
             return 0.0
         return sum(rj.bsld for rj in self._completed) / len(self._completed)
 
-    # ── Properties ─────────────────────────────────────────────────────────────
+    # Properties 
 
     @property
     def obs_shape(self) -> tuple[int, ...]:

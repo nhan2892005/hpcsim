@@ -449,7 +449,7 @@ Nếu cluster không có CPU nodes (`tiny_test`, `small_v100`):
 ## Pipeline Đầy Đủ (Khuyến Nghị)
 
 ```bash
-# ── Bước 1: Train GAS-MARL + Green-Backfilling ───────────────────────────────
+# Bước 1: Train GAS-MARL + Green-Backfilling 
 uv run hpcsim train \
     --algo gas_marl \
     --epochs 300 \
@@ -459,7 +459,7 @@ uv run hpcsim train \
     --ckpt-interval 50 \
     --save-dir models/
 
-# ── Bước 2: Train MaskablePPO + EASY-Backfilling (để so sánh) ────────────────
+# Bước 2: Train MaskablePPO + EASY-Backfilling (để so sánh) 
 uv run hpcsim train \
     --algo maskable_ppo \
     --epochs 300 \
@@ -467,20 +467,20 @@ uv run hpcsim train \
     --backfill easy \
     --save-dir models/
 
-# ── Bước 3: Train baseline (không backfill, cho ablation) ────────────────────
+# Bước 3: Train baseline (không backfill, cho ablation) 
 uv run hpcsim train \
     --algo all \
     --epochs 300 \
     --backfill none \
     --save-dir models/ablation_none/
 
-# ── Bước 4: Eval (backfill PHẢI khớp với lúc train) ──────────────────────────
+# Bước 4: Eval (backfill PHẢI khớp với lúc train) 
 uv run hpcsim eval \
     --model-dir models/ --algo gas_marl \
     --backfill green --episodes 30 \
     --output-csv eval_gasmarl.csv
 
-# ── Bước 5: So sánh toàn diện ────────────────────────────────────────────────
+# Bước 5: So sánh toàn diện 
 uv run hpcsim compare \
     --classical fifo,tiresias,gavel,pollux \
     --rl maskable_ppo,gas_marl \
@@ -489,7 +489,7 @@ uv run hpcsim compare \
     --output-csv compare_green.csv \
     --plot compare_green.png
 
-# ── Bước 6: Plot ─────────────────────────────────────────────────────────────
+# Bước 6: Plot 
 uv run hpcsim plot --type learning-curve \
     --input models/gas_marl/train_log.csv
 uv run hpcsim plot --type benchmark --input compare_green.csv

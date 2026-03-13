@@ -1,12 +1,5 @@
 """
 Workload Generator — arrival processes and trace generation.
-
-Supports:
-- Poisson arrivals (λ = constant)
-- Pareto (heavy-tailed / bursty, Philly trace)
-- Diurnal (24-hour pattern, Alibaba trace)
-
-Calibrated to match production cluster traces from the survey.
 """
 
 from __future__ import annotations
@@ -175,7 +168,7 @@ class WorkloadGenerator:
         job_idx = 0
 
         while t < cfg.duration:
-            # ── Inter-arrival time ────────────────────────────────────────
+            # Inter-arrival time 
             if cfg.arrival_process == ArrivalProcess.POISSON:
                 iat = self.rng.expovariate(1.0 / cfg.mean_arrival_interval)
             elif cfg.arrival_process == ArrivalProcess.PARETO:
@@ -188,7 +181,7 @@ class WorkloadGenerator:
             if t >= cfg.duration:
                 break
 
-            # ── Job type selection ────────────────────────────────────────
+            # Job type selection 
             r = self.rng.random()
             cumul = 0.0
             job_type = JobType.TRAINING
@@ -232,7 +225,7 @@ class WorkloadGenerator:
         mem_gb    = profile.memory_per_replica_gb * (1.0 + self.rng.uniform(0, 0.3))
         bs        = profile.ref_batch_size
 
-        # ── Training ──────────────────────────────────────────────────────
+        # Training 
         if job_type == JobType.TRAINING:
             estimated_duration = num_iter / (profile.base_throughput_k80 * 2.0)
             deadline = (
@@ -256,7 +249,7 @@ class WorkloadGenerator:
                 user_id=user_id,
             )
 
-        # ── Inference ─────────────────────────────────────────────────────
+        # Inference 
         elif job_type == JobType.INFERENCE:
             slo = self.rng.choice([50.0, 100.0, 200.0, 500.0])
             return InferenceJob(
@@ -273,7 +266,7 @@ class WorkloadGenerator:
                 user_id=user_id,
             )
 
-        # ── LLM ──────────────────────────────────────────────────────────
+        # LLM 
         elif job_type == JobType.LLM_TRAIN:
             size_b = self.rng.choice([1.5, 7.0, 13.0, 70.0])
             pp = self.rng.choice([1, 2, 4])
@@ -301,7 +294,7 @@ class WorkloadGenerator:
                 user_id=user_id,
             )
 
-        # ── HPO ───────────────────────────────────────────────────────────
+        # HPO 
         elif job_type == JobType.HPO:
             trials = self.rng.choice([4, 8, 16])
             return HPOJob(
@@ -315,7 +308,7 @@ class WorkloadGenerator:
                 user_id=user_id,
             )
 
-        # ── CPU-only job ──────────────────────────────────────────────────
+        # CPU-only job 
         elif job_type == "cpu":
             ncpu = self.rng.choice([4, 8, 16, 32, 64])
             dur  = self.rng.lognormvariate(math.log(600), 0.8)
@@ -332,7 +325,7 @@ class WorkloadGenerator:
                           if self.rng.random() < cfg.deadline_fraction else None),
             )
 
-        # ── MIG slice job ─────────────────────────────────────────────────
+        # MIG slice job 
         elif job_type == "mig":
             profile = self.rng.choice([MIGProfile.G1_10GB, MIGProfile.G2_20GB, MIGProfile.G3_40GB])
             dur     = self.rng.lognormvariate(math.log(180), 0.6)
@@ -350,7 +343,7 @@ class WorkloadGenerator:
                           if self.rng.random() < cfg.deadline_fraction else None),
             )
 
-        # ── CPU+GPU Hybrid job ────────────────────────────────────────────
+        # CPU+GPU Hybrid job 
         elif job_type == "hybrid":
             ngpu = self.rng.choice([2, 4, 8])
             iters = _sample_iterations(cfg.mean_iter, cfg.std_iter, self.rng)
@@ -365,6 +358,6 @@ class WorkloadGenerator:
                 memory_per_gpu_gb=MODEL_PROFILES[arch].memory_per_replica_gb,
             )
 
-        # ── Fallback ──────────────────────────────────────────────────────
+        # Fallback 
         else:
             return self._make_job(JobType.TRAINING, t, idx)

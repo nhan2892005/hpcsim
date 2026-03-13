@@ -58,7 +58,7 @@ hpcsim = "hpcsim.cli:main"
 Repository  = "https://github.com/nhan2892005/hpcsim"
 "Bug Tracker" = "https://github.com/nhan2892005/hpcsim/issues"
 
-# ── uv configuration ──────────────────────────────────────────────────────────
+# uv configuration 
 [tool.uv]
 # Default extras to install with `uv sync`
 # Override with: uv sync --extra rl
@@ -68,11 +68,11 @@ dev-dependencies = [
     "ruff>=0.4",
 ]
 
-# ── Hatch build ───────────────────────────────────────────────────────────────
+# Hatch build 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hpcsim"]
 
-# ── Ruff linter ───────────────────────────────────────────────────────────────
+# Ruff linter 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -81,7 +81,7 @@ target-version = "py310"
 select = ["E", "W", "F", "I"]
 ignore = ["E501"]
 
-# ── Pytest ────────────────────────────────────────────────────────────────────
+# Pytest 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts   = "-v --tb=short"

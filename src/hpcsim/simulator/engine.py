@@ -2,7 +2,7 @@
 Discrete Event Simulation Engine — high-performance edition.
 
 Optimisations over baseline engine
-───────────────────────────────────
+
 1. **Trigger-based scheduling** (eliminates ~95 % of SCHEDULE events)
    The original engine pushed a SCHEDULE event every SCHEDULE_INTERVAL = 5 s.
    For a 24-hour simulation that produces ~17,280 events/simulation just for
@@ -138,7 +138,7 @@ class SimulationEngine:
     Discrete-event simulation of an HPC GPU cluster.
 
     Scheduling model (trigger-based)
-    ─────────────────────────────────
+    
     The scheduler is invoked *at most once per simulation timestamp*, and only
     when at least one of the following occurred in the current timestamp batch:
       • JOB_ARRIVAL   — new jobs entered _pending
@@ -146,7 +146,7 @@ class SimulationEngine:
       • JOB_PREEMPT   — resources were freed
 
     Job completion model (event-driven)
-    ─────────────────────────────────────
+    
     When a job starts, its exact finish time is computed from remaining work and
     current throughput; a single JOB_COMPLETE event is pushed for that time.
     If throughput changes (co-location, preemption), the sequence counter is
@@ -156,7 +156,7 @@ class SimulationEngine:
     engines.
 
     Pending-job data structure (_pending: PendingJobQueue)
-    ───────────────────────────────────────────────────────
+    
     Previously _pending was a plain dict[str, AnyJob].  It is now a
     PendingJobQueue — a min-heap keyed by submit_time with lazy deletion.
 
@@ -223,7 +223,7 @@ class SimulationEngine:
             j.job_id: j for j in workload
         }
 
-    # ── Heap helper ───────────────────────────────────────────────────────────
+    # Heap helper 
 
     def _push(self, t: float, etype: EventType, job_id: str | None = None,
               data: dict | None = None) -> None:
@@ -234,7 +234,7 @@ class SimulationEngine:
                   event_type=etype, job_id=job_id, data=data or {})
         )
 
-    # ── Throughput computation ────────────────────────────────────────────────
+    # Throughput computation 
 
     def _compute_throughput(self, job: AnyJob) -> float:
         gpu_ids = self._job_gpus.get(job.job_id, [])
@@ -260,7 +260,7 @@ class SimulationEngine:
 
         return max(tp, 1e-9)
 
-    # ── Remaining-time calculation ────────────────────────────────────────────
+    # Remaining-time calculation 
 
     def _remaining_job_time(self, job: AnyJob, tp: float) -> float:
         if tp <= 0:
@@ -297,7 +297,7 @@ class SimulationEngine:
 
         return float("inf")
 
-    # ── Direct-completion scheduling ──────────────────────────────────────────
+    # Direct-completion scheduling 
 
     def _schedule_completion(self, job: AnyJob, current_time: float) -> None:
         jid = job.job_id
@@ -384,7 +384,7 @@ class SimulationEngine:
 
         self._job_segment_start[jid] = current_time
 
-    # ── Core event handlers ───────────────────────────────────────────────────
+    # Core event handlers 
 
     def _on_arrival(self, event: Event) -> None:
         """
@@ -447,7 +447,7 @@ class SimulationEngine:
         # Reschedule next sample
         self._push(event.time + self.METRIC_INTERVAL, EventType.METRIC_SAMPLE)
 
-    # ── Preemption ────────────────────────────────────────────────────────────
+    # Preemption 
 
     def _preempt_job(self, job_id: str, current_time: float) -> None:
         if job_id not in self._running:
@@ -494,14 +494,14 @@ class SimulationEngine:
         self._pending.repush(job)
         self.metrics.record_preemption(job)
 
-    # ── Scheduler dispatch (single call per timestamp) ────────────────────────
+    # Scheduler dispatch (single call per timestamp) 
 
     def _do_schedule(self, current_time: float) -> None:
         """
         Core scheduler dispatch — called AT MOST ONCE per simulation timestamp.
 
         Key change from original engine
-        ────────────────────────────────
+        
         Instead of ``list(self._pending.values())`` (O(J) copy), the
         PendingJobQueue is passed directly.  Schedulers iterate the queue's
         internal heap via iter_fifo() — a generator that supports early-exit
@@ -597,7 +597,7 @@ class SimulationEngine:
 
         self.metrics.record_job_start(job, current_time)
 
-    # ── Legacy _on_schedule (kept for backward compatibility) ─────────────────
+    # Legacy _on_schedule (kept for backward compatibility) 
 
     def _on_schedule(self, event: Event) -> None:
         """
@@ -608,14 +608,14 @@ class SimulationEngine:
         """
         self._do_schedule(event.time)
 
-    # ── Main run loop — trigger-based with event batching ─────────────────────
+    # Main run loop — trigger-based with event batching 
 
     def run(self) -> SimulationResult:
         """
         Execute the simulation.
 
         Event-processing loop
-        ─────────────────────
+        
         1. Peek at the earliest event's timestamp T.
         2. Drain ALL events with timestamp == T into a batch (coalescing).
         3. Process each event in the batch:
@@ -629,18 +629,18 @@ class SimulationEngine:
         5. Repeat until heap is empty or T > max_time.
 
         Scheduler call reduction
-        ────────────────────────
+        
         Original (periodic, 5 s interval, 24 h sim): ~17,280 scheduler calls.
         New (trigger-based):  ≈ num_arrivals + num_completions + num_preemptions.
         Typical reduction: 10×–100× fewer scheduler calls.
 
         PendingJobQueue pass-through
-        ────────────────────────────
+        
         The PendingJobQueue is passed directly to scheduler.schedule() in
         _do_schedule(), avoiding the O(J) list() copy that the original engine
         performed on every scheduling event.
         """
-        # ── Seed events ───────────────────────────────────────────────────────
+        # Seed events 
         for job in sorted(self.workload, key=lambda j: j.submit_time):
             self._push(job.submit_time, EventType.JOB_ARRIVAL, job.job_id)
 
@@ -650,14 +650,14 @@ class SimulationEngine:
         processed = 0
 
         while self._heap:
-            # ── Step 1: get current batch timestamp ───────────────────────────
+            # Step 1: get current batch timestamp 
             batch_time = self._heap[0].time
             if batch_time > self.max_time:
                 break
             self._current_time = batch_time
             schedule_needed    = False
 
-            # ── Step 2-3: drain and process entire batch at batch_time ────────
+            # Step 2-3: drain and process entire batch at batch_time 
             while self._heap and self._heap[0].time == batch_time:
                 event = heapq.heappop(self._heap)
                 processed += 1
@@ -690,13 +690,13 @@ class SimulationEngine:
                     print("WARNING: event limit reached, terminating early.")
                     break
 
-            # ── Step 4: single scheduler invocation per timestamp batch ───────
+            # Step 4: single scheduler invocation per timestamp batch 
             # _do_schedule() itself checks `if not self._pending: return`
             # so the bool guard here is just a cheap outer gate.
             if schedule_needed and self._pending:
                 self._do_schedule(batch_time)
 
-        # ── Finalise — flush progress for jobs still running at max_time ──────
+        # Finalise — flush progress for jobs still running at max_time 
         for job in list(self._running.values()):
             self._flush_segment(job, self._current_time)
             job.end_time = self._current_time

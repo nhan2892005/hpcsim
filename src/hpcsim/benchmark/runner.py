@@ -143,7 +143,7 @@ class BenchmarkRunner:
 
         return aggregated
 
-    # ── Display ───────────────────────────────────────────────────────────────
+    # Display 
 
     def print_table(self, results: dict[str, AggregateResult]):
         headers = [

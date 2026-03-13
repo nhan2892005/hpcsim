@@ -10,18 +10,18 @@ scheduler itself.  This module provides:
   - BackfillWrapper  — wraps any BaseScheduler with a BackfillPolicy
 
 Architecture (two-layer):
-  ┌─────────────────────────────────────────────────┐
+  ┌┐
   │           Primary Scheduler                      │
   │  (FIFO / Gavel / GAS-MARL / PPO / ...)          │
   │  → picks job + optional delay decision           │
-  └────────────────────┬────────────────────────────┘
+  └┬┘
                        │  blocked or delay
                        ▼
-  ┌─────────────────────────────────────────────────┐
+  ┌┐
   │           BackfillPolicy                         │
   │  EASY: fill gaps in submit-time order            │
   │  Green: fill gaps, prefer low-brown-energy jobs  │
-  └─────────────────────────────────────────────────┘
+  └┘
 
 Usage::
 
@@ -54,13 +54,13 @@ from ..workload.job import AnyJob, ResourceType
 from .schedulers import BaseScheduler, SchedulingDecision
 
 
-# ─── Brown-energy threshold (Algorithm 2, GAS-MARL paper §4.3) ───────────────
+# Brown-energy threshold (Algorithm 2, GAS-MARL paper §4.3) 
 BROWN_THRESHOLD_J: float = 50_000.0   # σ = 50,000 J
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # Abstract BackfillPolicy
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class BackfillPolicy(ABC):
     """
@@ -85,9 +85,9 @@ class BackfillPolicy(ABC):
         ...
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # EASY-Backfilling
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class EASYBackfillPolicy(BackfillPolicy):
     """
@@ -150,9 +150,9 @@ class EASYBackfillPolicy(BackfillPolicy):
         return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # Green-Backfilling
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class GreenBackfillPolicy(BackfillPolicy):
     """
@@ -179,7 +179,7 @@ class GreenBackfillPolicy(BackfillPolicy):
         self.re = renewable
         self.sigma = brown_threshold_j
 
-    # ── priority ─────────────────────────────────────────────────────────────
+    # priority 
 
     def _priority(self, job: AnyJob) -> float:
         """L_j = re_j × q_j × p_j  (Eq. 15) — ascending sort."""
@@ -191,7 +191,7 @@ class GreenBackfillPolicy(BackfillPolicy):
         p_j   = getattr(job, "power_watts", None) or (300.0 * max(q_j, 1))
         return re_j * q_j * p_j
 
-    # ── brown energy estimate ─────────────────────────────────────────────────
+    # brown energy estimate 
 
     def _brown_energy_j(self, job: AnyJob, current_time: float) -> float:
         """
@@ -206,7 +206,7 @@ class GreenBackfillPolicy(BackfillPolicy):
         brown_w  = max(0.0, power_w - re_avail)
         return brown_w * runtime
 
-    # ── select ───────────────────────────────────────────────────────────────
+    # select 
 
     def select_backfill_jobs(
         self,
@@ -258,16 +258,16 @@ class GreenBackfillPolicy(BackfillPolicy):
         return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # BackfillWrapper
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class BackfillWrapper(BaseScheduler):
     """
     Wraps any primary scheduler with a backfill policy.
 
     Scheduling flow
-    ───────────────
+    
     1. Call ``primary.schedule()`` → SchedulingDecision.
     2. Identify the "head" job: highest-priority pending job that was NOT
        scheduled (blocked because of insufficient resources).
@@ -277,7 +277,7 @@ class BackfillWrapper(BaseScheduler):
        the decision if resources are actually available.
 
     GAS-MARL special case
-    ──────────────────────
+    
     If the primary scheduler attaches ``decision.delay_info`` (set by
     GASMARLScheduler when it issues a delay action), the wrapper uses that
     metadata to compute the backfill window as per paper §4.3:
@@ -300,7 +300,7 @@ class BackfillWrapper(BaseScheduler):
         self.primary = primary
         self.policy  = policy
 
-    # ── main schedule ─────────────────────────────────────────────────────────
+    # main schedule 
 
     def schedule(
         self,
@@ -346,7 +346,7 @@ class BackfillWrapper(BaseScheduler):
 
         return decision
 
-    # ── shadow time ───────────────────────────────────────────────────────────
+    # shadow time 
 
     def _shadow_time(
         self,
@@ -378,7 +378,7 @@ class BackfillWrapper(BaseScheduler):
                 return _est_done(j)
         return current_time + 7200.0  # conservative fallback
 
-    # ── GAS-MARL delay window (paper §4.3) ───────────────────────────────────
+    # GAS-MARL delay window (paper §4.3) 
 
     def _window_from_delay_info(
         self,
@@ -416,7 +416,7 @@ class BackfillWrapper(BaseScheduler):
 
         return ts_lm
 
-    # ── delegate attribute access to primary ──────────────────────────────────
+    # delegate attribute access to primary 
 
     def __getattr__(self, item):
         # Allow transparent attribute access on the primary scheduler
@@ -430,9 +430,9 @@ class BackfillWrapper(BaseScheduler):
                 f"policy={self.policy.__class__.__name__})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # Factory helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 def create_backfill_policy(
     name: str,

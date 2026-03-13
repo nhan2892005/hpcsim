@@ -15,7 +15,7 @@ Run:
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-# ── 1. Demonstrate renewable energy module ───────────────────────────────────
+# 1. Demonstrate renewable energy module 
 def demo_renewable():
     print("=" * 60)
     print("  RENEWABLE ENERGY MODULE DEMO")
@@ -33,7 +33,7 @@ def demo_renewable():
     print()
 
 
-# ── 2. Classical simulation with ReUtil ───────────────────────────────────────
+# 2. Classical simulation with ReUtil 
 def demo_simulation_with_green():
     print("=" * 60)
     print("  SIMULATION WITH GREEN ENERGY METRICS")
@@ -67,7 +67,7 @@ def demo_simulation_with_green():
     print()
 
 
-# ── 3. RL Environment quick test ─────────────────────────────────────────────
+# 3. RL Environment quick test 
 def demo_rl_env():
     print("=" * 60)
     print("  RL ENVIRONMENT DEMO")
@@ -108,7 +108,7 @@ def demo_rl_env():
     print()
 
 
-# ── 4. Training example (few epochs for demo) ────────────────────────────────
+# 4. Training example (few epochs for demo) 
 def demo_training():
     print("=" * 60)
     print("  RL TRAINING DEMO (10 epochs — for demo only)")
@@ -139,7 +139,7 @@ def demo_training():
     print()
 
 
-# ── 5. Full benchmark comparison ─────────────────────────────────────────────
+# 5. Full benchmark comparison 
 def demo_comparison():
     print("=" * 60)
     print("  FULL BENCHMARK COMPARISON (classical only)")
@@ -173,7 +173,7 @@ def demo_comparison():
     print()
 
 
-# ── Run all demos ─────────────────────────────────────────────────────────────
+# Run all demos 
 if __name__ == "__main__":
     import os
     os.makedirs("./outputs", exist_ok=True)

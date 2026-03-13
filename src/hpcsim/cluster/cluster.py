@@ -2,7 +2,7 @@
 Cluster resource manager — Optimised edition.
 
 Key optimisations over baseline:
-────────────────────────────────
+
 1. **O(1) free-resource pools** — every allocate/deallocate touches only the
    affected GPU/MIG/CPU rather than scanning the whole cluster.
 
@@ -41,7 +41,7 @@ from .hardware import (
 )
 
 
-# ─── NodeSpec ─────────────────────────────────────────────────────────────────
+# NodeSpec 
 
 @dataclass
 class NodeSpec:
@@ -94,7 +94,7 @@ class NodeSpec:
         return self.num_nodes * self.num_sockets * cpp
 
 
-# ─── ClusterConfig ────────────────────────────────────────────────────────────
+# ClusterConfig 
 
 @dataclass
 class ClusterConfig:
@@ -130,7 +130,7 @@ class ClusterConfig:
         return result
 
 
-# ─── Preset cluster configs ───────────────────────────────────────────────────
+# Preset cluster configs 
 
 CLUSTER_CONFIGS: dict[str, ClusterConfig] = {
 
@@ -241,7 +241,7 @@ CLUSTER_CONFIGS: dict[str, ClusterConfig] = {
 }
 
 
-# ─── Cluster ──────────────────────────────────────────────────────────────────
+# Cluster 
 
 class Cluster:
     """
@@ -267,7 +267,7 @@ class Cluster:
         self.mig_slices:  dict[str, MIGInstance]  = {}
         self.node_map:    dict[str, str]           = {}   # resource_id → node_id
 
-        # ── O(1) free-resource pools ─────────────────────────────────────────
+        # O(1) free-resource pools 
         # GPU pools
         self._free_gpu_ids:           set[str]                       = set()
         self._free_gpu_ids_by_type:   dict[GPUType, set[str]]        = defaultdict(set)
@@ -285,7 +285,7 @@ class Cluster:
 
         self._build()
 
-    # ── Build ─────────────────────────────────────────────────────────────────
+    # Build 
 
     def _build(self) -> None:
         node_specs = self.config._normalise_nodes()
@@ -345,7 +345,7 @@ class Cluster:
 
                 gpu_counters[key] += 1
 
-    # ── Pool helpers (internal) ───────────────────────────────────────────────
+    # Pool helpers (internal) 
 
     def _gpu_free_add(self, gid: str, gtype: GPUType, nid: str) -> None:
         """Register *gid* as having available capacity in all GPU pools."""
@@ -369,7 +369,7 @@ class Cluster:
         self._free_mig_ids_by_profile[profile].discard(mid)
         self._free_mig_ids_by_parent[parent_gpu_id].discard(mid)
 
-    # ── Queries — all O(1) now ────────────────────────────────────────────────
+    # Queries — all O(1) now 
 
     def total_gpu_count(self) -> int:
         return len(self.gpus)
@@ -438,7 +438,7 @@ class Cluster:
     def total_power_watts(self) -> float:
         return sum(n.total_power_watts() for n in self.nodes.values())
 
-    # ── GPU Placement — O(nodes) instead of O(nodes × gpus_per_node) ─────────
+    # GPU Placement — O(nodes) instead of O(nodes × gpus_per_node) 
 
     def find_consolidated_gpus(
         self,
@@ -490,7 +490,7 @@ class Cluster:
                 return result
         return self.find_scattered_gpus(num_gpus, gpu_type)
 
-    # ── MIG Placement — O(free_mig_slices) instead of O(total_mig_slices) ────
+    # MIG Placement — O(free_mig_slices) instead of O(total_mig_slices) 
 
     def find_mig_slices(
         self,
@@ -526,7 +526,7 @@ class Cluster:
         ))
         return candidates[:num_slices]
 
-    # ── CPU Placement (unchanged algorithm, but free_cores O(1) via counter) ─
+    # CPU Placement (unchanged algorithm, but free_cores O(1) via counter) 
 
     def find_cpu_cores(
         self,
@@ -565,7 +565,7 @@ class Cluster:
 
         return allocation if remaining <= 0 else None
 
-    # ── Allocation / Deallocation ─────────────────────────────────────────────
+    # Allocation / Deallocation 
 
     def allocate(
         self,
@@ -715,7 +715,7 @@ class Cluster:
             c.utilization = c.allocated_cores / max(1, c.total_cores)
             self._total_free_cpu_cores += cores   # O(1) counter update
 
-    # ── Connectivity ──────────────────────────────────────────────────────────
+    # Connectivity 
 
     def is_consolidated(self, gpu_ids: list[str]) -> bool:
         nodes = {self.node_map[gid] for gid in gpu_ids if gid in self.node_map}
@@ -731,7 +731,7 @@ class Cluster:
             for nid in nodes if nid in self.nodes
         )
 
-    # ── Snapshot — now O(1) for GPU counts ───────────────────────────────────
+    # Snapshot — now O(1) for GPU counts 
 
     def snapshot(self) -> dict:
         """
@@ -758,7 +758,7 @@ class Cluster:
             "power_watts":      self.total_power_watts(),
         }
 
-    # ── Describe ─────────────────────────────────────────────────────────────
+    # Describe 
 
     def describe(self) -> str:
         lines = [f"Cluster: {self.config.name}"]

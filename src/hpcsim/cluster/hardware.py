@@ -21,7 +21,7 @@ from typing import Optional
 import math
 
 
-# ─── GPU Type ─────────────────────────────────────────────────────────────────
+# GPU Type 
 
 class GPUType(str, Enum):
     K80           = "k80"
@@ -37,7 +37,7 @@ class GPUType(str, Enum):
     V100_UNCONSOL = "v100_unconsolidated"
 
 
-# ─── CPU Type ─────────────────────────────────────────────────────────────────
+# CPU Type 
 
 class CPUType(str, Enum):
     """Common HPC CPU families."""
@@ -51,7 +51,7 @@ class CPUType(str, Enum):
     GENERIC    = "generic"       # Unspecified / simulation placeholder
 
 
-# ─── Interconnect ─────────────────────────────────────────────────────────────
+# Interconnect 
 
 class InterconnectType(str, Enum):
     NVLINK     = "nvlink"
@@ -64,7 +64,7 @@ class InterconnectType(str, Enum):
     NVSWITCH   = "nvswitch"      # NVSwitch fabric (DGX SuperPOD)
 
 
-# ─── MIG (Multi-Instance GPU) ─────────────────────────────────────────────────
+# MIG (Multi-Instance GPU) 
 
 class MIGProfile(str, Enum):
     """
@@ -96,7 +96,7 @@ MIG_PROFILE_SPECS: dict[MIGProfile, dict] = {
 }
 
 
-# ─── GPU Spec ─────────────────────────────────────────────────────────────────
+# GPU Spec 
 
 @dataclass(frozen=True)
 class GPUSpec:
@@ -190,7 +190,7 @@ GPU_SPECS: dict[GPUType, GPUSpec] = {
 }
 
 
-# ─── CPU Spec ─────────────────────────────────────────────────────────────────
+# CPU Spec 
 
 @dataclass(frozen=True)
 class CPUSpec:
@@ -272,7 +272,7 @@ CPU_SPECS: dict[CPUType, CPUSpec] = {
 }
 
 
-# ─── Interconnect ─────────────────────────────────────────────────────────────
+# Interconnect 
 
 @dataclass(frozen=True)
 class InterconnectSpec:
@@ -293,7 +293,7 @@ INTERCONNECT_SPECS: dict[InterconnectType, InterconnectSpec] = {
 }
 
 
-# ─── GPU Instance (runtime state) ─────────────────────────────────────────────
+# GPU Instance (runtime state) 
 
 @dataclass
 class MIGInstance:
@@ -404,7 +404,7 @@ class GPUInstance:
         return self.spec.memory_gb - self.memory_used_gb
 
 
-# ─── CPU Instance (runtime state) ─────────────────────────────────────────────
+# CPU Instance (runtime state) 
 
 @dataclass
 class CPUInstance:
@@ -438,7 +438,7 @@ class CPUInstance:
         return self.spec.idle_watts + rng * u
 
 
-# ─── Server Node ──────────────────────────────────────────────────────────────
+# Server Node 
 
 class NodeType(str, Enum):
     GPU_ONLY  = "gpu_only"   # Only GPUs (no significant CPU compute role)
@@ -516,13 +516,13 @@ class ServerNode:
             for s in range(self.num_sockets)
         ]
 
-    # ── Legacy compatibility ──────────────────────────────────────────────────
+    # Legacy compatibility 
 
     def build_gpus(self) -> None:
         """Backward-compatible alias for build()."""
         self.build()
 
-    # ── Queries ───────────────────────────────────────────────────────────────
+    # Queries 
 
     @property
     def total_cpu_cores(self) -> int:
@@ -546,7 +546,7 @@ class ServerNode:
         return gpu_power + cpu_power + base_power
 
 
-# ─── Communication Time Models ────────────────────────────────────────────────
+# Communication Time Models 
 
 def ring_allreduce_time_sec(
     model_params: int,

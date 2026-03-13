@@ -16,7 +16,7 @@ Implemented algorithms (12 total):
 12. Backfill         — Conservative backfill EASY (HPC standard)
 
 Performance optimisations (this revision)
-──────────────────────────────────────────
+
 1. PendingJobQueue integration
    The engine now passes a ``PendingJobQueue`` object instead of a plain list.
    Schedulers that iterate in submit-time order (FIFO, Tiresias, MLFQ, …) use
@@ -57,9 +57,9 @@ from ..cluster.hardware import CPUType, MIGProfile
 from .pending_queue import PendingJobQueue, MultiLevelQueue
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # Scheduling Decision — supports GPU, MIG, CPU, and Hybrid allocations
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @dataclass
 class Allocation:
@@ -86,7 +86,7 @@ class SchedulingDecision:
     # Optional metadata set by GASMARLScheduler when it issues a delay action.
     # BackfillWrapper reads this to compute the correct backfill window.
     # Schema: {"delay_type": int, "release_time": float, "head_job_id": str,
-    #           "head_req_gpus": int}
+    #          "head_req_gpus": int}
     delay_info: Optional[dict]    = field(default=None)
 
     def add(self, job: AnyJob, gpu_ids: list[str],
@@ -112,9 +112,9 @@ class SchedulingDecision:
         self.preemptions.append(job_id)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # BaseScheduler
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class BaseScheduler(ABC):
     """
@@ -124,7 +124,7 @@ class BaseScheduler(ABC):
     Helper methods handle GPU, MIG, and CPU resource discovery.
 
     Performance helpers (new)
-    ─────────────────────────
+    
     _iter_fifo(pending)
         Yield pending jobs in ascending submit_time order.
         Uses PendingJobQueue.iter_fifo() when available (avoids sorted()),
@@ -140,7 +140,7 @@ class BaseScheduler(ABC):
     def __init__(self, cluster: "Cluster"):
         self.cluster = cluster
 
-    # ── Performance helpers ───────────────────────────────────────────────────
+    # Performance helpers 
 
     @staticmethod
     def _iter_fifo(
@@ -179,7 +179,7 @@ class BaseScheduler(ABC):
             and (not c.has_cpu_nodes() or c.free_cpu_cores()    == 0)
         )
 
-    # ── GPU helpers ───────────────────────────────────────────────────────────
+    # GPU helpers 
 
     def _find_gpus(
         self,
@@ -194,7 +194,7 @@ class BaseScheduler(ABC):
         gt = gpu_type or getattr(job, "gpu_type_preference", None)
         return self.cluster.find_best_placement(n, gt, prefer_consolidated)
 
-    # ── MIG helpers ───────────────────────────────────────────────────────────
+    # MIG helpers 
 
     def _find_mig(
         self,
@@ -210,7 +210,7 @@ class BaseScheduler(ABC):
         gt      = gpu_type or getattr(job, "gpu_type_preference", None)
         return self.cluster.find_mig_slices(n, prof, gt)
 
-    # ── CPU helpers ───────────────────────────────────────────────────────────
+    # CPU helpers 
 
     def _find_cpus(
         self,
@@ -227,7 +227,7 @@ class BaseScheduler(ABC):
         ct = cpu_type or getattr(job, "cpu_type_preference", None)
         return self.cluster.find_cpu_cores(n, ct, prefer_consolidated)
 
-    # ── Unified resource finder ───────────────────────────────────────────────
+    # Unified resource finder 
 
     def _find_resources(
         self, job: AnyJob
@@ -274,9 +274,9 @@ def register(cls: type) -> type:
     return cls
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 1. FIFO
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class FIFOScheduler(BaseScheduler):
@@ -284,7 +284,7 @@ class FIFOScheduler(BaseScheduler):
     First In First Out — baseline for JCT comparisons.
 
     Optimisation (this revision)
-    ────────────────────────────
+    
     Uses _iter_fifo() which drains the PendingJobQueue heap snapshot in
     submit_time order — no call to sorted().
     The early-exit on _all_resources_exhausted() stops the loop as soon as
@@ -311,9 +311,9 @@ class FIFOScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 2. SJF
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class SJFScheduler(BaseScheduler):
@@ -351,9 +351,9 @@ class SJFScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 3. LAS / Tiresias
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 # MLFQ thresholds in GPU-seconds (Tiresias paper Table 3)
 _TIRESIAS_THRESHOLDS = [60, 180, 600, 1800, float("inf")]
@@ -366,7 +366,7 @@ class TiresiasLASScheduler(BaseScheduler):
     Tiresias [Gu et al., NSDI'19]: prioritize jobs with less GPU-seconds.
 
     Optimisation (this revision)
-    ────────────────────────────
+    
     Maintains a ``MultiLevelQueue`` (self._mlq) as instance state.
     On each schedule() call, sync() reconciles the MLQ with the engine
     snapshot in O(J), then iter_by_priority() yields in level order without
@@ -413,9 +413,9 @@ class TiresiasLASScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 4. E-LAS
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class ELASScheduler(BaseScheduler):
@@ -451,9 +451,9 @@ class ELASScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 5. MLFQ
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class MLFQScheduler(BaseScheduler):
@@ -462,7 +462,7 @@ class MLFQScheduler(BaseScheduler):
     Priority decays with accumulated runtime (accumulated_work in seconds).
 
     Optimisation (this revision)
-    ────────────────────────────
+    
     Same MultiLevelQueue approach as Tiresias, but keyed by
     ``accumulated_work`` (wall-clock seconds used) rather than
     ``attained_service`` (GPU-seconds).
@@ -507,9 +507,9 @@ class MLFQScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 6. Gavel
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class GavelScheduler(BaseScheduler):
@@ -568,9 +568,9 @@ class GavelScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 7. Pollux
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class PolluxScheduler(BaseScheduler):
@@ -635,9 +635,9 @@ class PolluxScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 8. Themis
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class ThemisScheduler(BaseScheduler):
@@ -688,9 +688,9 @@ class ThemisScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 9. Chronus
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class ChronusScheduler(BaseScheduler):
@@ -745,9 +745,9 @@ class ChronusScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 10. ElasticFlow
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class ElasticFlowScheduler(BaseScheduler):
@@ -817,9 +817,9 @@ class ElasticFlowScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 11. MaxMinFairness (DRF)
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class MaxMinFairnessScheduler(BaseScheduler):
@@ -862,9 +862,9 @@ class MaxMinFairnessScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # 12. Backfill — deprecated stub (use BackfillWrapper from scheduler.backfill)
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 @register
 class BackfillScheduler(BaseScheduler):
@@ -927,9 +927,9 @@ class BackfillScheduler(BaseScheduler):
         return decision
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # Factory
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 def create_scheduler(name: str, cluster: "Cluster") -> BaseScheduler:
     """Instantiate a scheduler by name (case-insensitive)."""

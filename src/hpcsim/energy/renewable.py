@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-# ─── Solar model parameters ──────────────────────────────────────────────────
+# Solar model parameters 
 
 @dataclass
 class SolarModel:
@@ -35,7 +35,7 @@ class SolarModel:
         return self.efficiency * self.area_m2 * irradiance
 
 
-# ─── Wind model parameters ───────────────────────────────────────────────────
+# Wind model parameters 
 
 @dataclass
 class WindModel:
@@ -54,7 +54,7 @@ class WindModel:
         return self.rated_power_w
 
 
-# ─── Configuration ────────────────────────────────────────────────────────────
+# Configuration 
 
 @dataclass
 class RenewableConfig:
@@ -67,7 +67,7 @@ class RenewableConfig:
     rng_seed: Optional[int] = None
 
 
-# ─── Renewable Energy Module ──────────────────────────────────────────────────
+# Renewable Energy Module 
 
 class RenewableEnergyModule:
     """
@@ -105,7 +105,7 @@ class RenewableEnergyModule:
         self._total_kw: list[float] = []
         self._generate(total_slots)
 
-    # ── Generation ────────────────────────────────────────────────────────────
+    # Generation 
 
     def _solar_irradiance(self, hour_of_day: float) -> float:
         """
@@ -148,7 +148,7 @@ class RenewableEnergyModule:
             self._wind_kw.append(wind_w  / 1000.0)
             self._total_kw.append((solar_w + wind_w) / 1000.0)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API 
 
     def _slot_index(self, sim_time_sec: float) -> int:
         idx = int(sim_time_sec / self.config.slot_duration_sec)

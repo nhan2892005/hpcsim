@@ -49,7 +49,7 @@ class ModelArch(str, Enum):
     PPO         = "ppo_rl"
 
 
-# ── Model Profiles ────────────────────────────────────────────────────────────
+# Model Profiles 
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -191,7 +191,7 @@ MODEL_PROFILES: dict[ModelArch, ModelProfile] = {
 }
 
 
-# ── Throughput functions ──────────────────────────────────────────────────────
+# Throughput functions 
 
 def solo_throughput(arch: ModelArch, gpu_type: GPUType, batch_size: int) -> float:
     """
@@ -289,7 +289,7 @@ def colocation_throughput(
     return t1 * factor, t2 * factor
 
 
-# ── Job Base ──────────────────────────────────────────────────────────────────
+# Job Base 
 
 @dataclass
 class BaseJob:
@@ -317,7 +317,7 @@ class BaseJob:
         return self.end_time - self.submit_time
 
 
-# ── Training Job ──────────────────────────────────────────────────────────────
+# Training Job 
 
 @dataclass
 class TrainingJob(BaseJob):
@@ -350,7 +350,7 @@ class TrainingJob(BaseJob):
         return self.completed_iterations / max(1, self.num_iterations)
 
 
-# ── Inference Job ─────────────────────────────────────────────────────────────
+# Inference Job 
 
 @dataclass
 class InferenceJob(BaseJob):
@@ -393,7 +393,7 @@ class InferenceJob(BaseJob):
         return 1
 
 
-# ── LLM Job ───────────────────────────────────────────────────────────────────
+# LLM Job 
 
 @dataclass
 class LLMJob(BaseJob):
@@ -436,7 +436,7 @@ class LLMJob(BaseJob):
         return max(0, self.num_iterations - self.completed_iterations)
 
 
-# ── HPO Job ───────────────────────────────────────────────────────────────────
+# HPO Job 
 
 @dataclass
 class HPOJob(BaseJob):
@@ -464,9 +464,9 @@ class HPOJob(BaseJob):
 AnyJob = TrainingJob | InferenceJob | LLMJob | HPOJob
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # NEW: Resource type enum + CPU/MIG job classes
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 from ..cluster.hardware import CPUType, MIGProfile   # noqa — appended to file
 
@@ -482,7 +482,7 @@ class ResourceType(str, Enum):
     CPU_GPU  = "cpu_gpu"   # Both CPU cores AND GPU(s) — e.g. data-parallel w/ local PS
 
 
-# ── CPU Job ───────────────────────────────────────────────────────────────────
+# CPU Job 
 
 @dataclass
 class CPUJob(BaseJob):
@@ -542,7 +542,7 @@ class CPUJob(BaseJob):
         return 1.0  # simplified: CPU jobs run to completion
 
 
-# ── MIG Job ───────────────────────────────────────────────────────────────────
+# MIG Job 
 
 @dataclass
 class MIGJob(BaseJob):
@@ -592,7 +592,7 @@ class MIGJob(BaseJob):
         return self.completed_iterations / max(1, self.num_iterations)
 
 
-# ── Mixed CPU+GPU Job ─────────────────────────────────────────────────────────
+# Mixed CPU+GPU Job 
 
 @dataclass
 class HybridJob(BaseJob):

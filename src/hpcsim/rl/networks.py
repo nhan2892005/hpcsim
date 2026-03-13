@@ -26,7 +26,7 @@ from .env import (
 TOTAL_ROWS = MAX_QUEUE_SIZE + RUN_WIN + GREEN_WIN + CLUSTER_WIN
 
 
-# ─── Masked Categorical ───────────────────────────────────────────────────────
+# Masked Categorical 
 
 class CategoricalMasked(Categorical):
     """Categorical distribution with boolean action masking."""
@@ -44,7 +44,7 @@ class CategoricalMasked(Categorical):
         return -p_log_p.sum(dim=-1)
 
 
-# ─── Shared per-row Encoder ───────────────────────────────────────────────────
+# Shared per-row Encoder 
 
 class _RowEncoder(nn.Module):
     """
@@ -63,7 +63,7 @@ class _RowEncoder(nn.Module):
         return self.net(x)
 
 
-# ─── Aggregator ───────────────────────────────────────────────────────────────
+# Aggregator 
 
 class _SectionAggregator(nn.Module):
     """
@@ -82,7 +82,7 @@ class _SectionAggregator(nn.Module):
         return self.proj(torch.cat([mean_pool, max_pool], dim=-1))
 
 
-# ─── MaskablePPO Networks ─────────────────────────────────────────────────────
+# MaskablePPO Networks 
 
 class MaskablePPOActor(nn.Module):
     """
@@ -165,7 +165,7 @@ class MaskablePPOCritic(nn.Module):
         return self.value_head(torch.cat([q_vec, r_vec, g_vec, c_vec], dim=-1))
 
 
-# ─── GAS-MARL Networks ────────────────────────────────────────────────────────
+# GAS-MARL Networks 
 
 class GASMARLActor(nn.Module):
     """

@@ -2,7 +2,7 @@
 Optimised pending-job priority queue data structures for HPC simulation.
 
 Problem solved
-──────────────
+
 Every ``scheduler.schedule()`` call previously:
   1. Created a list of all J pending jobs     → O(J)
   2. Called ``sorted(pending, key=...)``       → O(J log J)
@@ -11,12 +11,12 @@ When J = 50 000 and the scheduler is invoked on every JOB_ARRIVAL /
 JOB_COMPLETE event, the cumulative sort cost dominates the simulation.
 
 Solution
-────────
+
 PendingJobQueue
     Min-heap keyed by (submit_time, insertion_seq).
 
     Complexity budget
-    ─────────────────
+    
     push()        O(log J)        — heap insert
     remove()      O(1) amortised  — lazy deletion via _jobs dict
     pop()         O(log J)        — heap pop + ghost purge
@@ -43,7 +43,7 @@ MultiLevelQueue
     The service metric can be customised via service_fn.
 
 Backward compatibility
-──────────────────────
+
 PendingJobQueue exposes the same mapping interface as the ``dict`` that
 the engine previously used for ``_pending``:
 
@@ -65,16 +65,16 @@ from ..workload.job import AnyJob
 __all__ = ["PendingJobQueue", "MultiLevelQueue"]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # PendingJobQueue
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class PendingJobQueue:
     """
     Priority queue for pending HPC jobs.
 
     Internal layout
-    ───────────────
+    
     _heap : list[(key: float, seq: int, job_id: str)]
         Min-heap.  A job may have multiple entries (one per push call), but
         only the newest one is "live" — the rest are ghosts (see _jobs).
@@ -88,7 +88,7 @@ class PendingJobQueue:
             and that uniquely identifies each push call.
 
     Ghost purging
-    ─────────────
+    
     A ghost arises when remove() is called (sets _jobs entry to absent) while
     a matching heap entry still exists.  Ghosts are silently skipped in pop(),
     peek(), and iter_fifo().  The heap therefore grows at most by a factor of
@@ -96,7 +96,7 @@ class PendingJobQueue:
     called once per job) it stays lean.
 
     Re-push safety
-    ──────────────
+    
     Calling push() for a job_id that is already present just updates the
     object reference in _jobs without adding a duplicate heap entry.
     Use repush() when the heap key (submit_time) has genuinely changed.
@@ -109,7 +109,7 @@ class PendingJobQueue:
         self._jobs: dict[str, AnyJob]            = {}   # job_id → job
         self._seq:  int                          = 0
 
-    # ── Insertion ─────────────────────────────────────────────────────────────
+    # Insertion 
 
     def push(self, job: AnyJob, key: Optional[float] = None) -> None:
         """
@@ -138,7 +138,7 @@ class PendingJobQueue:
         self.remove(job.job_id)   # lazy-delete old entry
         self.push(job, key)       # fresh insert with new key
 
-    # ── Removal ───────────────────────────────────────────────────────────────
+    # Removal 
 
     def remove(self, job_id: str) -> Optional[AnyJob]:
         """
@@ -152,7 +152,7 @@ class PendingJobQueue:
         """
         return self._jobs.pop(job_id, None)
 
-    # ── Access ────────────────────────────────────────────────────────────────
+    # Access 
 
     def peek(self) -> Optional[AnyJob]:
         """
@@ -175,14 +175,14 @@ class PendingJobQueue:
         _, _, jid = heapq.heappop(self._heap)
         return self._jobs.pop(jid, None)
 
-    # ── Internal ghost purge ──────────────────────────────────────────────────
+    # Internal ghost purge 
 
     def _purge_ghosts(self) -> None:
         """Discard heap entries whose job_id is no longer in _jobs."""
         while self._heap and self._heap[0][2] not in self._jobs:
             heapq.heappop(self._heap)
 
-    # ── Iteration ─────────────────────────────────────────────────────────────
+    # Iteration 
 
     def iter_fifo(self) -> Iterator[AnyJob]:
         """
@@ -219,7 +219,7 @@ class PendingJobQueue:
         """O(J).  Return all pending jobs in arbitrary order."""
         return list(self._jobs.values())
 
-    # ── Mapping interface (backward-compat with engine's _pending dict API) ───
+    # Mapping interface (backward-compat with engine's _pending dict API) 
 
     def __contains__(self, job_id: str) -> bool:
         """O(1).  Test membership by job_id string."""
@@ -256,16 +256,16 @@ class PendingJobQueue:
                 f"ghosts={len(self._heap) - len(self._jobs)})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # MultiLevelQueue
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 class MultiLevelQueue:
     """
     N-level priority queue for MLFQ and Tiresias LAS schedulers.
 
     Motivation
-    ──────────
+    
     Both MLFQ and Tiresias sort the pending list by a service metric
     (accumulated_work or attained_service) on every schedule() call.
     With J = 50 000 pending jobs this is O(J log J) per call.
@@ -282,7 +282,7 @@ class MultiLevelQueue:
       than O(J log J).
 
     Parameters
-    ──────────
+    
     thresholds  : sorted list of float boundaries for the service metric.
                   A job is placed in level i if
                   thresholds[i-1] < service ≤ thresholds[i].
@@ -293,16 +293,16 @@ class MultiLevelQueue:
                   for MLFQ.
 
     Example — Tiresias (GPU-seconds, Table 3)
-    ─────────────────────────────────────────
+    
     ::
         _TIRESIAS_THRESHOLDS = [60, 180, 600, 1800]
         mlq = MultiLevelQueue(_TIRESIAS_THRESHOLDS)
         # → 5 levels:
-        #   0: [0, 60]        highest priority
-        #   1: (60, 180]
-        #   2: (180, 600]
-        #   3: (600, 1800]
-        #   4: (1800, ∞)      lowest priority
+        #  0: [0, 60]        highest priority
+        #  1: (60, 180]
+        #  2: (180, 600]
+        #  3: (600, 1800]
+        #  4: (1800, ∞)      lowest priority
     """
 
     def __init__(
@@ -320,7 +320,7 @@ class MultiLevelQueue:
             service_fn or (lambda j: getattr(j, "attained_service", 0.0))
         )
 
-    # ── Level assignment ──────────────────────────────────────────────────────
+    # Level assignment 
 
     def _level_for(self, job: AnyJob) -> int:
         """O(levels).  Determine which level a job belongs to."""
@@ -330,7 +330,7 @@ class MultiLevelQueue:
                 return i
         return self._n - 1
 
-    # ── Mutation ──────────────────────────────────────────────────────────────
+    # Mutation 
 
     def push(self, job: AnyJob) -> None:
         """
@@ -381,7 +381,7 @@ class MultiLevelQueue:
         for job in pending:
             self.push(job)
 
-    # ── Iteration ─────────────────────────────────────────────────────────────
+    # Iteration 
 
     def iter_by_priority(self) -> Iterator[AnyJob]:
         """
@@ -402,7 +402,7 @@ class MultiLevelQueue:
             out.extend(q.values())
         return out
 
-    # ── Sizing ────────────────────────────────────────────────────────────────
+    # Sizing 
 
     def __len__(self) -> int:
         return len(self._level_of)
